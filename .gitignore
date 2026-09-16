@@ -1,0 +1,22 @@
+# Maven
+target/
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+
+# Local environment and generated data
+.env
+.env.*
+!.env.example
+docker-data/
+
+# Private planning documents
+EventForge*Implementation Plan.md
+
+# Operating system files
+.DS_Store
+Thumbs.db
