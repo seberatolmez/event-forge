@@ -11,10 +11,10 @@ spring:
       ddl-auto: validate
     properties:
       hibernate:
-        default_schema: order
+        default_schema: order_service
   flyway:
-    schemas: order
-    default-schema: order
+    schemas: order_service
+    default-schema: order_service
 
 server:
   port: ${SERVER_PORT:8080}
