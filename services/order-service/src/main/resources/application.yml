@@ -1,6 +1,20 @@
 spring:
   application:
     name: order-service
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:eventforge}
+    username: ${POSTGRES_USER:eventforge}
+    password: ${POSTGRES_PASSWORD:eventforge}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: order_service
+  flyway:
+    schemas: order_service
+    default-schema: order_service
 
 server:
   port: ${SERVER_PORT:8080}

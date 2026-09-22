@@ -1,0 +1,7 @@
+.git
+.idea
+**/target
+services/payment-service
+services/inventory-service
+services/notification-service
+infrastructure

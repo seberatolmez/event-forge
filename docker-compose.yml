@@ -149,6 +149,28 @@ services:
     networks:
       - eventforge
 
+  order-service:
+    build:
+      context: .
+      dockerfile: services/order-service/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-eventforge}
+      POSTGRES_USER: ${POSTGRES_USER:-eventforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eventforge}
+    ports:
+      - "${ORDER_SERVICE_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/actuator/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - eventforge
+
   kafka-init:
     image: confluentinc/cp-kafka:7.7.1
     depends_on:
