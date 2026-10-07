@@ -21,6 +21,8 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import com.eventforge.order.outbox.OutboxEvent;
+import com.eventforge.order.outbox.OutboxEventRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -40,6 +42,36 @@ class OrderApiIntegrationTest {
 
     @Autowired
     ObjectMapper objectMapper;
+
+    @Autowired
+    OutboxEventRepository outboxEventRepository;
+
+    @Test
+    void outboxEventPersistsMetadataAndJsonPayload() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        UUID customerId = UUID.randomUUID();
+        JsonNode payload = objectMapper.readTree("""
+                {
+                  "orderId": "%s",
+                  "customerId": "%s",
+                  "totalAmount": 149.99,
+                  "currency": "USD"
+                }
+                """.formatted(orderId, customerId));
+
+        OutboxEvent savedEvent = outboxEventRepository.saveAndFlush(
+                OutboxEvent.create("Order", orderId, "OrderCreated", 1, payload));
+
+        assertThat(savedEvent.getId()).isNotNull();
+        assertThat(savedEvent.getAggregateType()).isEqualTo("Order");
+        assertThat(savedEvent.getAggregateId()).isEqualTo(orderId);
+        assertThat(savedEvent.getEventType()).isEqualTo("OrderCreated");
+        assertThat(savedEvent.getEventVersion()).isEqualTo(1);
+        assertThat(savedEvent.getPayload()).isEqualTo(payload);
+        assertThat(savedEvent.getCreatedAt()).isNotNull();
+        assertThat(savedEvent.getPublishedAt()).isNull();
+        assertThat(savedEvent.getRetryCount()).isZero();
+    }
 
     @Test
     void createdOrderIsPersistedAndFetchableAgainstRealPostgres() throws Exception {
