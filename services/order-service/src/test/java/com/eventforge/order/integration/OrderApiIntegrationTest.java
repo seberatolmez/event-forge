@@ -3,6 +3,7 @@ package com.eventforge.order.integration;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
@@ -74,7 +75,7 @@ class OrderApiIntegrationTest {
     }
 
     @Test
-    void createdOrderIsPersistedAndFetchableAgainstRealPostgres() throws Exception {
+    void createdOrderAndOutboxEventArePersistedAndFetchableAgainstRealPostgres() throws Exception {
         UUID customerId = UUID.randomUUID();
         ResponseEntity<String> createResponse = postOrder(customerId, "149.99", "USD");
 
@@ -85,6 +86,18 @@ class OrderApiIntegrationTest {
         assertThat(created.path("totalAmount").decimalValue()).isEqualByComparingTo(new BigDecimal("149.99"));
         assertThat(created.path("currency").asText()).isEqualTo("USD");
         assertThat(created.path("status").asText()).isEqualTo("PENDING");
+
+        List<OutboxEvent> outboxEvents = outboxEventRepository.findAllByAggregateId(orderId);
+        assertThat(outboxEvents).hasSize(1);
+        OutboxEvent outboxEvent = outboxEvents.get(0);
+        assertThat(outboxEvent.getAggregateType()).isEqualTo("Order");
+        assertThat(outboxEvent.getEventType()).isEqualTo("OrderCreated");
+        assertThat(outboxEvent.getEventVersion()).isEqualTo(1);
+        assertThat(outboxEvent.getPayload().path("orderId").asText()).isEqualTo(orderId.toString());
+        assertThat(outboxEvent.getPayload().path("customerId").asText()).isEqualTo(customerId.toString());
+        assertThat(outboxEvent.getPayload().path("totalAmount").decimalValue())
+                .isEqualByComparingTo(new BigDecimal("149.99"));
+        assertThat(outboxEvent.getPayload().path("currency").asText()).isEqualTo("USD");
 
         assertThat(createResponse.getHeaders().getLocation().toString())
                 .isEqualTo("http://localhost:%d/orders/%s".formatted(port, orderId));
