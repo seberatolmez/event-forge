@@ -121,4 +121,15 @@ public class OutboxEvent {
     public int getRetryCount() {
         return retryCount;
     }
+
+    public void markPublished(Instant publishedAt) {
+        if (publishedAt == null) {
+            throw new IllegalArgumentException("publishedAt must not be null");
+        }
+        this.publishedAt = publishedAt;
+    }
+
+    public void incrementRetryCount() {
+        this.retryCount++;
+    }
 }

@@ -16,6 +16,7 @@ The foundation currently includes:
 - Three-node Kafka cluster in KRaft mode
 - Kafka Schema Registry
 - Initial Kafka topics with six partitions and replication factor three
+- Transactional outbox publisher that sends order events to Kafka
 
 ## Repository Layout
 
@@ -97,6 +98,18 @@ Each port can be overridden with the `SERVER_PORT` environment variable.
 | Kafka broker 2 | 19093 |
 | Kafka broker 3 | 19094 |
 | Schema Registry | 8085 |
+
+The order service connects to the Compose brokers through their internal
+listeners. When running it directly on the host, its default bootstrap servers
+are `localhost:19092,localhost:19093,localhost:19094`. Override them with
+`KAFKA_BOOTSTRAP_SERVERS` as needed.
+
+The outbox publisher polls every second by default, processes up to 100 events
+per batch, and waits up to 10 seconds for each Kafka acknowledgement. These can
+be configured with `OUTBOX_PUBLISHER_POLL_INTERVAL_MS`,
+`OUTBOX_PUBLISHER_BATCH_SIZE`, and `OUTBOX_PUBLISHER_SEND_TIMEOUT_MS`. Publisher
+successes, failures, and duration are available through the order service's
+`/actuator/metrics` endpoint.
 
 ## Verify Setup
 

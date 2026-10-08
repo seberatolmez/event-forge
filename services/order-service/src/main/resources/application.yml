@@ -1,6 +1,12 @@
 spring:
   application:
     name: order-service
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092,localhost:19093,localhost:19094}
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
   datasource:
     url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:eventforge}
     username: ${POSTGRES_USER:eventforge}
@@ -19,11 +25,20 @@ spring:
 server:
   port: ${SERVER_PORT:8080}
 
+eventforge:
+  outbox:
+    publisher:
+      enabled: ${OUTBOX_PUBLISHER_ENABLED:true}
+      poll-interval-ms: ${OUTBOX_PUBLISHER_POLL_INTERVAL_MS:1000}
+      batch-size: ${OUTBOX_PUBLISHER_BATCH_SIZE:100}
+      send-timeout-ms: ${OUTBOX_PUBLISHER_SEND_TIMEOUT_MS:10000}
+      orders-topic: ${KAFKA_ORDERS_TOPIC:orders}
+
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics
   endpoint:
     health:
       probes:
