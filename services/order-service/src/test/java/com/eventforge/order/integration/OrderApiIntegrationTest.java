@@ -3,6 +3,7 @@ package com.eventforge.order.integration;
 import static org.assertj.core.api.Assertions.assertThat;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
@@ -21,6 +22,8 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 
+import com.eventforge.order.outbox.OutboxEvent;
+import com.eventforge.order.outbox.OutboxEventRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
@@ -41,8 +44,38 @@ class OrderApiIntegrationTest {
     @Autowired
     ObjectMapper objectMapper;
 
+    @Autowired
+    OutboxEventRepository outboxEventRepository;
+
     @Test
-    void createdOrderIsPersistedAndFetchableAgainstRealPostgres() throws Exception {
+    void outboxEventPersistsMetadataAndJsonPayload() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        UUID customerId = UUID.randomUUID();
+        JsonNode payload = objectMapper.readTree("""
+                {
+                  "orderId": "%s",
+                  "customerId": "%s",
+                  "totalAmount": 149.99,
+                  "currency": "USD"
+                }
+                """.formatted(orderId, customerId));
+
+        OutboxEvent savedEvent = outboxEventRepository.saveAndFlush(
+                OutboxEvent.create("Order", orderId, "OrderCreated", 1, payload));
+
+        assertThat(savedEvent.getId()).isNotNull();
+        assertThat(savedEvent.getAggregateType()).isEqualTo("Order");
+        assertThat(savedEvent.getAggregateId()).isEqualTo(orderId);
+        assertThat(savedEvent.getEventType()).isEqualTo("OrderCreated");
+        assertThat(savedEvent.getEventVersion()).isEqualTo(1);
+        assertThat(savedEvent.getPayload()).isEqualTo(payload);
+        assertThat(savedEvent.getCreatedAt()).isNotNull();
+        assertThat(savedEvent.getPublishedAt()).isNull();
+        assertThat(savedEvent.getRetryCount()).isZero();
+    }
+
+    @Test
+    void createdOrderAndOutboxEventArePersistedAndFetchableAgainstRealPostgres() throws Exception {
         UUID customerId = UUID.randomUUID();
         ResponseEntity<String> createResponse = postOrder(customerId, "149.99", "USD");
 
@@ -53,6 +86,18 @@ class OrderApiIntegrationTest {
         assertThat(created.path("totalAmount").decimalValue()).isEqualByComparingTo(new BigDecimal("149.99"));
         assertThat(created.path("currency").asText()).isEqualTo("USD");
         assertThat(created.path("status").asText()).isEqualTo("PENDING");
+
+        List<OutboxEvent> outboxEvents = outboxEventRepository.findAllByAggregateId(orderId);
+        assertThat(outboxEvents).hasSize(1);
+        OutboxEvent outboxEvent = outboxEvents.get(0);
+        assertThat(outboxEvent.getAggregateType()).isEqualTo("Order");
+        assertThat(outboxEvent.getEventType()).isEqualTo("OrderCreated");
+        assertThat(outboxEvent.getEventVersion()).isEqualTo(1);
+        assertThat(outboxEvent.getPayload().path("orderId").asText()).isEqualTo(orderId.toString());
+        assertThat(outboxEvent.getPayload().path("customerId").asText()).isEqualTo(customerId.toString());
+        assertThat(outboxEvent.getPayload().path("totalAmount").decimalValue())
+                .isEqualByComparingTo(new BigDecimal("149.99"));
+        assertThat(outboxEvent.getPayload().path("currency").asText()).isEqualTo("USD");
 
         assertThat(createResponse.getHeaders().getLocation().toString())
                 .isEqualTo("http://localhost:%d/orders/%s".formatted(port, orderId));
