@@ -139,6 +139,7 @@ services:
       SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
       SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka-1:29092,PLAINTEXT://kafka-2:29092,PLAINTEXT://kafka-3:29092
       SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR: 3
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: ${SCHEMA_REGISTRY_COMPATIBILITY_LEVEL:-BACKWARD}
     ports:
       - "${SCHEMA_REGISTRY_PORT:-8085}:8081"
     healthcheck:
@@ -164,12 +165,15 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_DB: ${POSTGRES_DB:-eventforge}
       POSTGRES_USER: ${POSTGRES_USER:-eventforge}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eventforge}
       KAFKA_BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
     ports:
       - "${ORDER_SERVICE_PORT:-8080}:8080"
     healthcheck:
