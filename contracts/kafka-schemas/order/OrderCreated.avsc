@@ -1,0 +1,66 @@
+{
+  "type": "record",
+  "name": "OrderCreated",
+  "namespace": "com.eventforge.contracts.order",
+  "doc": "OrderCreated domain event (version 1) using the common EventForge envelope.",
+  "fields": [
+    {
+      "name": "eventId",
+      "type": {"type": "string", "logicalType": "uuid"},
+      "doc": "Globally unique event identifier; equals the outbox_events id."
+    },
+    {
+      "name": "eventType",
+      "type": "string",
+      "doc": "Logical event type. Always OrderCreated for this schema."
+    },
+    {
+      "name": "eventVersion",
+      "type": "int",
+      "doc": "Version of the event contract. Version 1 for this schema."
+    },
+    {
+      "name": "occurredAt",
+      "type": {"type": "long", "logicalType": "timestamp-millis"},
+      "doc": "Time the event was created, in epoch milliseconds (UTC)."
+    },
+    {
+      "name": "aggregateType",
+      "type": "string",
+      "doc": "Domain aggregate type. Order for this schema."
+    },
+    {
+      "name": "aggregateId",
+      "type": {"type": "string", "logicalType": "uuid"},
+      "doc": "Identifier of the aggregate instance. Also used as the Kafka record key."
+    },
+    {
+      "name": "payload",
+      "doc": "Event-specific data.",
+      "type": {
+        "type": "record",
+        "name": "OrderCreatedPayload",
+        "fields": [
+          {
+            "name": "orderId",
+            "type": {"type": "string", "logicalType": "uuid"}
+          },
+          {
+            "name": "customerId",
+            "type": {"type": "string", "logicalType": "uuid"}
+          },
+          {
+            "name": "totalAmount",
+            "doc": "Matches orders.total_amount NUMERIC(12, 2).",
+            "type": {"type": "bytes", "logicalType": "decimal", "precision": 12, "scale": 2}
+          },
+          {
+            "name": "currency",
+            "type": "string",
+            "doc": "ISO 4217 currency code."
+          }
+        ]
+      }
+    }
+  ]
+}

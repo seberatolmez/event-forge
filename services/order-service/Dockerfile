@@ -4,6 +4,7 @@ WORKDIR /workspace
 COPY pom.xml ./
 COPY services/order-service/pom.xml services/order-service/pom.xml
 COPY services/order-service/src services/order-service/src
+COPY contracts contracts
 RUN mvn -q -pl services/order-service -am -DskipTests package
 
 # Runtime stage

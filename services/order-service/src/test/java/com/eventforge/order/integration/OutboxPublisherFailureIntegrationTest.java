@@ -23,6 +23,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import com.eventforge.order.outbox.OutboxEvent;
 import com.eventforge.order.outbox.OutboxEventRepository;
+import com.eventforge.contracts.order.OrderCreated;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.micrometer.core.instrument.MeterRegistry;
@@ -30,7 +31,8 @@ import io.micrometer.core.instrument.MeterRegistry;
 @SpringBootTest(properties = {
         "eventforge.outbox.publisher.enabled=true",
         "eventforge.outbox.publisher.poll-interval-ms=100",
-        "eventforge.outbox.publisher.send-timeout-ms=1000"
+        "eventforge.outbox.publisher.send-timeout-ms=1000",
+        "spring.kafka.producer.properties[schema.registry.url]=mock://outbox-publisher-failure"
 })
 @Testcontainers(disabledWithoutDocker = true)
 class OutboxPublisherFailureIntegrationTest {
@@ -49,19 +51,28 @@ class OutboxPublisherFailureIntegrationTest {
     MeterRegistry meterRegistry;
 
     @MockitoBean
-    KafkaTemplate<String, String> kafkaTemplate;
+    KafkaTemplate<String, OrderCreated> kafkaTemplate;
 
     @Test
     void failedKafkaSendLeavesEventPendingAndRecordsRetryAndMetric() throws Exception {
-        when(kafkaTemplate.send(ArgumentMatchers.<ProducerRecord<String, String>>any()))
+        when(kafkaTemplate.send(ArgumentMatchers.<ProducerRecord<String, OrderCreated>>any()))
                 .thenReturn(CompletableFuture.failedFuture(new KafkaException("simulated broker failure")));
 
+        UUID orderId = UUID.randomUUID();
+        UUID customerId = UUID.randomUUID();
         OutboxEvent savedEvent = outboxEventRepository.saveAndFlush(OutboxEvent.create(
                 "Order",
-                UUID.randomUUID(),
+                orderId,
                 "OrderCreated",
                 1,
-                objectMapper.readTree("{\"orderId\":\"test\"}")));
+                objectMapper.readTree("""
+                        {
+                          "orderId": "%s",
+                          "customerId": "%s",
+                          "totalAmount": 12.34,
+                          "currency": "USD"
+                        }
+                        """.formatted(orderId, customerId))));
 
         await().atMost(Duration.ofSeconds(10)).untilAsserted(() -> {
             OutboxEvent storedEvent = outboxEventRepository.findById(savedEvent.getId()).orElseThrow();
