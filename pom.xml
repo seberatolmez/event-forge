@@ -29,6 +29,8 @@
         <java.version>21</java.version>
         <maven.compiler.release>21</maven.compiler.release>
         <confluent.version>7.7.1</confluent.version>
+        <!-- Matches the Avro runtime bundled with kafka-avro-serializer 7.7.1. -->
+        <avro.version>1.11.3</avro.version>
     </properties>
 
     <repositories>
