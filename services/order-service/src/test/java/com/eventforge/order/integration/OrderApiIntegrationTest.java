@@ -27,7 +27,9 @@ import com.eventforge.order.outbox.OutboxEventRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "eventforge.outbox.publisher.enabled=false")
 @Testcontainers(disabledWithoutDocker = true)
 class OrderApiIntegrationTest {
 

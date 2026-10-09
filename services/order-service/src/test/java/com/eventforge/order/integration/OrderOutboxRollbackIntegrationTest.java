@@ -28,7 +28,9 @@ import com.eventforge.order.outbox.OutboxEvent;
 import com.eventforge.order.outbox.OutboxEventRepository;
 import com.eventforge.order.repository.OrderRepository;
 
-@SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
+@SpringBootTest(
+        webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
+        properties = "eventforge.outbox.publisher.enabled=false")
 @Testcontainers(disabledWithoutDocker = true)
 class OrderOutboxRollbackIntegrationTest {
 
