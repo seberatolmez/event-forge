@@ -5,6 +5,7 @@ import static org.awaitility.Awaitility.await;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Properties;
 import java.util.UUID;
@@ -37,6 +38,7 @@ import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import com.eventforge.contracts.order.OrderCreated;
 import com.eventforge.order.outbox.OutboxEvent;
 import com.eventforge.order.outbox.OutboxEventRepository;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -47,7 +49,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
         properties = {
                 "eventforge.outbox.publisher.enabled=true",
                 "eventforge.outbox.publisher.poll-interval-ms=100",
-                "eventforge.outbox.publisher.send-timeout-ms=5000"
+                "eventforge.outbox.publisher.send-timeout-ms=5000",
+                "spring.kafka.producer.properties[schema.registry.url]=mock://outbox-publisher-integration"
         })
 @Import(OutboxPublisherIntegrationTest.KafkaTopicConfiguration.class)
 @Testcontainers(disabledWithoutDocker = true)
@@ -85,12 +88,19 @@ class OutboxPublisherIntegrationTest {
         JsonNode createdOrder = objectMapper.readTree(response.getBody());
         UUID orderId = UUID.fromString(createdOrder.path("id").asText());
 
-        ConsumerRecord<String, String> record = consumeOrderCreatedEvent();
+        ConsumerRecord<String, OrderCreated> record = consumeOrderCreatedEvent();
 
         assertThat(record.key()).isEqualTo(orderId.toString());
-        JsonNode payload = objectMapper.readTree(record.value());
-        assertThat(payload.path("orderId").asText()).isEqualTo(orderId.toString());
-        assertThat(payload.path("customerId").asText()).isEqualTo(customerId.toString());
+        assertThat(record.value().getEventType().toString()).isEqualTo("OrderCreated");
+        assertThat(record.value().getEventVersion()).isEqualTo(1);
+        assertThat(record.value().getAggregateType().toString()).isEqualTo("Order");
+        assertThat(record.value().getAggregateId()).isEqualTo(orderId);
+        assertThat(record.value().getPayload().getOrderId()).isEqualTo(orderId);
+        assertThat(record.value().getPayload().getCustomerId()).isEqualTo(customerId);
+        assertThat(record.value().getPayload().getTotalAmount()).isEqualByComparingTo("149.99");
+        assertThat(record.value().getPayload().getCurrency().toString()).isEqualTo("USD");
+        assertThat(record.value().getOccurredAt().toEpochMilli()).isEqualTo(
+                Instant.parse(headerValue(record, "occurredAt")).toEpochMilli());
         assertThat(record.headers().lastHeader("eventId")).isNotNull();
         assertThat(headerValue(record, "eventType")).isEqualTo("OrderCreated");
         assertThat(headerValue(record, "eventVersion")).isEqualTo("1");
@@ -106,20 +116,23 @@ class OutboxPublisherIntegrationTest {
         });
     }
 
-    private String headerValue(ConsumerRecord<String, String> record, String name) {
+    private String headerValue(ConsumerRecord<String, OrderCreated> record, String name) {
         return new String(record.headers().lastHeader(name).value(), StandardCharsets.UTF_8);
     }
 
-    private ConsumerRecord<String, String> consumeOrderCreatedEvent() {
+    private ConsumerRecord<String, OrderCreated> consumeOrderCreatedEvent() {
         Properties properties = new Properties();
         properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
         properties.put(ConsumerConfig.GROUP_ID_CONFIG, "outbox-publisher-test-" + UUID.randomUUID());
         properties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         properties.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
         properties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        properties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        properties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
+                io.confluent.kafka.serializers.KafkaAvroDeserializer.class.getName());
+        properties.put("schema.registry.url", "mock://outbox-publisher-integration");
+        properties.put("specific.avro.reader", true);
 
-        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(properties)) {
+        try (KafkaConsumer<String, OrderCreated> consumer = new KafkaConsumer<>(properties)) {
             consumer.subscribe(List.of(ORDERS_TOPIC));
             long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
             while (System.nanoTime() < deadline) {

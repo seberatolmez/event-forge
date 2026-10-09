@@ -5,6 +5,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.List;
@@ -26,6 +27,7 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 import org.springframework.test.util.ReflectionTestUtils;
 
+import com.eventforge.contracts.order.OrderCreated;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
@@ -40,7 +42,7 @@ class OutboxPublisherTest {
     private OutboxEventRepository outboxEventRepository;
 
     @Mock
-    private KafkaTemplate<String, String> kafkaTemplate;
+    private KafkaTemplate<String, OrderCreated> kafkaTemplate;
 
     private SimpleMeterRegistry meterRegistry;
     private OutboxPublisher publisher;
@@ -51,7 +53,6 @@ class OutboxPublisherTest {
         publisher = new OutboxPublisher(
                 outboxEventRepository,
                 kafkaTemplate,
-                new ObjectMapper(),
                 meterRegistry,
                 BATCH_SIZE,
                 1000,
@@ -59,24 +60,33 @@ class OutboxPublisherTest {
     }
 
     @Test
-    void publishesJsonPayloadWithAggregateKeyAndEventHeadersAfterKafkaAcknowledges() throws Exception {
+    void publishesAvroEnvelopeWithAggregateKeyAndEventHeadersAfterKafkaAcknowledges() {
         UUID aggregateId = UUID.randomUUID();
         OutboxEvent event = outboxEvent(aggregateId);
         when(outboxEventRepository.findUnpublishedForUpdate(BATCH_SIZE)).thenReturn(List.of(event));
-        CompletableFuture<SendResult<String, String>> acknowledged = CompletableFuture.completedFuture(null);
-        AtomicReference<ProducerRecord<String, String>> sentRecord = new AtomicReference<>();
-        when(kafkaTemplate.send(ArgumentMatchers.<ProducerRecord<String, String>>any())).thenAnswer(invocation -> {
-            sentRecord.set(invocation.getArgument(0));
-            return acknowledged;
-        });
+        CompletableFuture<SendResult<String, OrderCreated>> acknowledged = CompletableFuture.completedFuture(null);
+        AtomicReference<ProducerRecord<String, OrderCreated>> sentRecord = new AtomicReference<>();
+        when(kafkaTemplate.send(ArgumentMatchers.<ProducerRecord<String, OrderCreated>>any()))
+                .thenAnswer(invocation -> {
+                    sentRecord.set(invocation.getArgument(0));
+                    return acknowledged;
+                });
 
         publisher.publishPendingEvents();
 
-        verify(kafkaTemplate).send(ArgumentMatchers.<ProducerRecord<String, String>>any());
-        ProducerRecord<String, String> record = sentRecord.get();
+        verify(kafkaTemplate).send(ArgumentMatchers.<ProducerRecord<String, OrderCreated>>any());
+        ProducerRecord<String, OrderCreated> record = sentRecord.get();
         assertThat(record.topic()).isEqualTo("orders");
         assertThat(record.key()).isEqualTo(aggregateId.toString());
-        assertThat(record.value()).contains("\"orderId\":\"%s\"".formatted(aggregateId));
+        assertThat(record.value().getEventId()).isEqualTo(event.getId());
+        assertThat(record.value().getEventType().toString()).isEqualTo("OrderCreated");
+        assertThat(record.value().getEventVersion()).isEqualTo(1);
+        assertThat(record.value().getAggregateId()).isEqualTo(aggregateId);
+        assertThat(record.value().getOccurredAt()).isEqualTo(Instant.parse("2026-10-08T12:00:00Z"));
+        assertThat(record.value().getPayload().getOrderId()).isEqualTo(aggregateId);
+        assertThat(record.value().getPayload().getCustomerId()).isNotNull();
+        assertThat(record.value().getPayload().getTotalAmount()).isEqualByComparingTo("149.99");
+        assertThat(record.value().getPayload().getCurrency().toString()).isEqualTo("USD");
         assertThat(headerValue(record, "eventId")).isEqualTo(event.getId().toString());
         assertThat(headerValue(record, "eventType")).isEqualTo("OrderCreated");
         assertThat(headerValue(record, "eventVersion")).isEqualTo("1");
@@ -93,9 +103,9 @@ class OutboxPublisherTest {
         OutboxEvent laterEvent = outboxEvent(UUID.randomUUID());
         when(outboxEventRepository.findUnpublishedForUpdate(BATCH_SIZE))
                 .thenReturn(List.of(failedEvent, laterEvent));
-        CompletableFuture<SendResult<String, String>> failed =
+        CompletableFuture<SendResult<String, OrderCreated>> failed =
                 CompletableFuture.failedFuture(new KafkaException("simulated broker failure"));
-        when(kafkaTemplate.send(ArgumentMatchers.<ProducerRecord<String, String>>any())).thenReturn(failed);
+        when(kafkaTemplate.send(ArgumentMatchers.<ProducerRecord<String, OrderCreated>>any())).thenReturn(failed);
 
         publisher.publishPendingEvents();
 
@@ -108,7 +118,7 @@ class OutboxPublisherTest {
                 .counter()
                 .count()).isEqualTo(1.0);
         verify(kafkaTemplate, times(1))
-                .send(ArgumentMatchers.<ProducerRecord<String, String>>any());
+                .send(ArgumentMatchers.<ProducerRecord<String, OrderCreated>>any());
     }
 
     private OutboxEvent outboxEvent(UUID aggregateId) {
@@ -117,13 +127,17 @@ class OutboxPublisherTest {
                 aggregateId,
                 "OrderCreated",
                 1,
-                OBJECT_MAPPER.valueToTree(Map.of("orderId", aggregateId)));
+                OBJECT_MAPPER.valueToTree(Map.of(
+                        "orderId", aggregateId,
+                        "customerId", UUID.randomUUID(),
+                        "totalAmount", new BigDecimal("149.99"),
+                        "currency", "USD")));
         ReflectionTestUtils.setField(event, "id", UUID.randomUUID());
         ReflectionTestUtils.setField(event, "createdAt", Instant.parse("2026-10-08T12:00:00Z"));
         return event;
     }
 
-    private String headerValue(ProducerRecord<String, String> record, String headerName) {
+    private String headerValue(ProducerRecord<String, OrderCreated> record, String headerName) {
         Header header = record.headers().lastHeader(headerName);
         return new String(header.value(), StandardCharsets.UTF_8);
     }

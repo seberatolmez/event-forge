@@ -1,8 +1,11 @@
 package com.eventforge.order.outbox;
 
+import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.List;
+import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.kafka.clients.producer.ProducerRecord;
@@ -19,8 +22,9 @@ import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.eventforge.contracts.order.OrderCreated;
+import com.eventforge.contracts.order.OrderCreatedPayload;
+import com.fasterxml.jackson.databind.JsonNode;
 
 @Component
 @ConditionalOnProperty(prefix = "eventforge.outbox.publisher", name = "enabled", havingValue = "true", matchIfMissing = true)
@@ -29,8 +33,7 @@ public class OutboxPublisher {
     private static final Logger logger = LoggerFactory.getLogger(OutboxPublisher.class);
 
     private final OutboxEventRepository outboxEventRepository;
-    private final KafkaTemplate<String, String> kafkaTemplate;
-    private final ObjectMapper objectMapper;
+    private final KafkaTemplate<String, OrderCreated> kafkaTemplate;
     private final MeterRegistry meterRegistry;
     private final int batchSize;
     private final long sendTimeoutMs;
@@ -38,15 +41,13 @@ public class OutboxPublisher {
 
     public OutboxPublisher(
             OutboxEventRepository outboxEventRepository,
-            KafkaTemplate<String, String> kafkaTemplate,
-            ObjectMapper objectMapper,
+            KafkaTemplate<String, OrderCreated> kafkaTemplate,
             MeterRegistry meterRegistry,
             @Value("${eventforge.outbox.publisher.batch-size:100}") int batchSize,
             @Value("${eventforge.outbox.publisher.send-timeout-ms:10000}") long sendTimeoutMs,
             @Value("${eventforge.outbox.publisher.orders-topic:orders}") String ordersTopic) {
         this.outboxEventRepository = outboxEventRepository;
         this.kafkaTemplate = kafkaTemplate;
-        this.objectMapper = objectMapper;
         this.meterRegistry = meterRegistry;
         this.batchSize = batchSize;
         this.sendTimeoutMs = sendTimeoutMs;
@@ -67,7 +68,7 @@ public class OutboxPublisher {
     private boolean publish(OutboxEvent event) {
         long startedAt = System.nanoTime();
         try {
-            ProducerRecord<String, String> record = toRecord(event);
+            ProducerRecord<String, OrderCreated> record = toRecord(event);
             kafkaTemplate.send(record).get(sendTimeoutMs, TimeUnit.MILLISECONDS);
             event.markPublished(Instant.now());
             Counter.builder("eventforge.outbox.events.published")
@@ -92,11 +93,32 @@ public class OutboxPublisher {
         }
     }
 
-    private ProducerRecord<String, String> toRecord(OutboxEvent event) throws JsonProcessingException {
-        ProducerRecord<String, String> record = new ProducerRecord<>(
+    private ProducerRecord<String, OrderCreated> toRecord(OutboxEvent event) {
+        JsonNode payload = event.getPayload();
+        UUID orderId = UUID.fromString(payload.path("orderId").asText());
+        UUID customerId = UUID.fromString(payload.path("customerId").asText());
+        BigDecimal totalAmount = payload.path("totalAmount").decimalValue();
+        String currency = payload.path("currency").asText();
+
+        OrderCreated avroEvent = OrderCreated.newBuilder()
+                .setEventId(event.getId())
+                .setEventType(event.getEventType())
+                .setEventVersion(event.getEventVersion())
+                .setOccurredAt(event.getCreatedAt().truncatedTo(ChronoUnit.MILLIS))
+                .setAggregateType(event.getAggregateType())
+                .setAggregateId(event.getAggregateId())
+                .setPayload(OrderCreatedPayload.newBuilder()
+                        .setOrderId(orderId)
+                        .setCustomerId(customerId)
+                        .setTotalAmount(totalAmount)
+                        .setCurrency(currency)
+                        .build())
+                .build();
+
+        ProducerRecord<String, OrderCreated> record = new ProducerRecord<>(
                 ordersTopic,
                 event.getAggregateId().toString(),
-                objectMapper.writeValueAsString(event.getPayload()));
+                avroEvent);
         record.headers()
                 .add("eventId", headerValue(event.getId().toString()))
                 .add("eventType", headerValue(event.getEventType()))
