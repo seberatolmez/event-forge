@@ -28,5 +28,14 @@
     <properties>
         <java.version>21</java.version>
         <maven.compiler.release>21</maven.compiler.release>
+        <confluent.version>7.7.1</confluent.version>
     </properties>
+
+    <repositories>
+        <!-- Confluent artifacts (kafka-avro-serializer) are not published to Maven Central. -->
+        <repository>
+            <id>confluent</id>
+            <url>https://packages.confluent.io/maven/</url>
+        </repository>
+    </repositories>
 </project>
