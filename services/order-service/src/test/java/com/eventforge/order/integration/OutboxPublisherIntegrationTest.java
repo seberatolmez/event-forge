@@ -1,14 +1,17 @@
 package com.eventforge.order.integration;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.awaitility.Awaitility.await;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 import java.util.Properties;
 import java.util.UUID;
 
+import org.apache.avro.Schema;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -31,16 +34,26 @@ import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.KafkaAdmin.NewTopics;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
+import org.testcontainers.containers.GenericContainer;
+import org.testcontainers.containers.Network;
 import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.kafka.KafkaContainer;
+import org.testcontainers.containers.wait.strategy.Wait;
+import org.testcontainers.kafka.ConfluentKafkaContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
+import com.eventforge.contracts.order.OrderCreated;
 import com.eventforge.order.outbox.OutboxEvent;
 import com.eventforge.order.outbox.OutboxEventRepository;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
+
+import io.confluent.kafka.schemaregistry.client.CachedSchemaRegistryClient;
+import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
+import io.confluent.kafka.schemaregistry.client.rest.exceptions.RestClientException;
 
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -54,17 +67,39 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 class OutboxPublisherIntegrationTest {
 
     private static final String ORDERS_TOPIC = "orders";
+    private static final String ORDERS_SUBJECT = ORDERS_TOPIC + "-value";
+    private static final Network KAFKA_NETWORK = Network.newNetwork();
 
     @Container
     @ServiceConnection
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
     @Container
-    static final KafkaContainer kafka = new KafkaContainer(DockerImageName.parse("apache/kafka-native:3.8.0"));
+    static final ConfluentKafkaContainer kafka = new ConfluentKafkaContainer(
+            DockerImageName.parse("confluentinc/cp-kafka:7.7.1"))
+                    .withNetwork(KAFKA_NETWORK)
+                    .withListener("kafka:19092");
+
+    @Container
+    static final GenericContainer<?> schemaRegistry = new GenericContainer<>(
+            DockerImageName.parse("confluentinc/cp-schema-registry:7.7.1"))
+                    .withNetwork(KAFKA_NETWORK)
+                    .withNetworkAliases("schema-registry")
+                    .withExposedPorts(8081)
+                    .withEnv("SCHEMA_REGISTRY_HOST_NAME", "schema-registry")
+                    .withEnv("SCHEMA_REGISTRY_LISTENERS", "http://0.0.0.0:8081")
+                    .withEnv("SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS", "PLAINTEXT://kafka:19092")
+                    .withEnv("SCHEMA_REGISTRY_KAFKASTORE_TOPIC_REPLICATION_FACTOR", "1")
+                    .dependsOn(kafka)
+                    .waitingFor(Wait.forHttp("/subjects").forPort(8081).forStatusCode(200))
+                    .withStartupTimeout(Duration.ofMinutes(2));
 
     @DynamicPropertySource
     static void kafkaProperties(DynamicPropertyRegistry registry) {
         registry.add("spring.kafka.bootstrap-servers", kafka::getBootstrapServers);
+        registry.add(
+                "spring.kafka.producer.properties[schema.registry.url]",
+                OutboxPublisherIntegrationTest::schemaRegistryUrl);
     }
 
     @Autowired
@@ -85,12 +120,19 @@ class OutboxPublisherIntegrationTest {
         JsonNode createdOrder = objectMapper.readTree(response.getBody());
         UUID orderId = UUID.fromString(createdOrder.path("id").asText());
 
-        ConsumerRecord<String, String> record = consumeOrderCreatedEvent();
+        ConsumerRecord<String, OrderCreated> record = consumeOrderCreatedEvent();
 
         assertThat(record.key()).isEqualTo(orderId.toString());
-        JsonNode payload = objectMapper.readTree(record.value());
-        assertThat(payload.path("orderId").asText()).isEqualTo(orderId.toString());
-        assertThat(payload.path("customerId").asText()).isEqualTo(customerId.toString());
+        assertThat(record.value().getEventType().toString()).isEqualTo("OrderCreated");
+        assertThat(record.value().getEventVersion()).isEqualTo(1);
+        assertThat(record.value().getAggregateType().toString()).isEqualTo("Order");
+        assertThat(record.value().getAggregateId()).isEqualTo(orderId);
+        assertThat(record.value().getPayload().getOrderId()).isEqualTo(orderId);
+        assertThat(record.value().getPayload().getCustomerId()).isEqualTo(customerId);
+        assertThat(record.value().getPayload().getTotalAmount()).isEqualByComparingTo("149.99");
+        assertThat(record.value().getPayload().getCurrency().toString()).isEqualTo("USD");
+        assertThat(record.value().getOccurredAt().toEpochMilli()).isEqualTo(
+                Instant.parse(headerValue(record, "occurredAt")).toEpochMilli());
         assertThat(record.headers().lastHeader("eventId")).isNotNull();
         assertThat(headerValue(record, "eventType")).isEqualTo("OrderCreated");
         assertThat(headerValue(record, "eventVersion")).isEqualTo("1");
@@ -104,22 +146,27 @@ class OutboxPublisherIntegrationTest {
             assertThat(headerValue(record, "eventId")).isEqualTo(events.get(0).getId().toString());
             assertThat(headerValue(record, "occurredAt")).isEqualTo(events.get(0).getCreatedAt().toString());
         });
+
+        verifyBackwardCompatibilityRejectsIncompatibleSchema();
     }
 
-    private String headerValue(ConsumerRecord<String, String> record, String name) {
+    private String headerValue(ConsumerRecord<String, OrderCreated> record, String name) {
         return new String(record.headers().lastHeader(name).value(), StandardCharsets.UTF_8);
     }
 
-    private ConsumerRecord<String, String> consumeOrderCreatedEvent() {
+    private ConsumerRecord<String, OrderCreated> consumeOrderCreatedEvent() {
         Properties properties = new Properties();
         properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
         properties.put(ConsumerConfig.GROUP_ID_CONFIG, "outbox-publisher-test-" + UUID.randomUUID());
         properties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
         properties.put(ConsumerConfig.ENABLE_AUTO_COMMIT_CONFIG, "false");
         properties.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
-        properties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        properties.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG,
+                io.confluent.kafka.serializers.KafkaAvroDeserializer.class.getName());
+        properties.put("schema.registry.url", schemaRegistryUrl());
+        properties.put("specific.avro.reader", true);
 
-        try (KafkaConsumer<String, String> consumer = new KafkaConsumer<>(properties)) {
+        try (KafkaConsumer<String, OrderCreated> consumer = new KafkaConsumer<>(properties)) {
             consumer.subscribe(List.of(ORDERS_TOPIC));
             long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
             while (System.nanoTime() < deadline) {
@@ -130,6 +177,32 @@ class OutboxPublisherIntegrationTest {
             }
         }
         throw new AssertionError("No OrderCreated event was received from Kafka within 10 seconds");
+    }
+
+    private void verifyBackwardCompatibilityRejectsIncompatibleSchema() throws Exception {
+        try (SchemaRegistryClient registryClient = new CachedSchemaRegistryClient(schemaRegistryUrl(), 10)) {
+            assertThat(registryClient.getAllSubjects()).contains(ORDERS_SUBJECT);
+            registryClient.updateCompatibility(ORDERS_SUBJECT, "BACKWARD");
+            assertThat(registryClient.getCompatibility(ORDERS_SUBJECT)).isEqualTo("BACKWARD");
+
+            ObjectNode incompatibleSchemaJson = (ObjectNode) objectMapper.readTree(
+                    OrderCreated.getClassSchema().toString());
+            ((ArrayNode) incompatibleSchemaJson.get("fields"))
+                    .addObject()
+                    .put("name", "requiredFutureField")
+                    .put("type", "string");
+            Schema incompatibleSchema = new Schema.Parser().parse(incompatibleSchemaJson.toString());
+
+            assertThat(registryClient.testCompatibility(ORDERS_SUBJECT, incompatibleSchema)).isFalse();
+            assertThatThrownBy(() -> registryClient.register(ORDERS_SUBJECT, incompatibleSchema))
+                    .isInstanceOf(RestClientException.class)
+                    .hasMessageContaining("incompatible");
+            assertThat(registryClient.getAllVersions(ORDERS_SUBJECT)).containsExactly(1);
+        }
+    }
+
+    private static String schemaRegistryUrl() {
+        return "http://%s:%d".formatted(schemaRegistry.getHost(), schemaRegistry.getMappedPort(8081));
     }
 
     private ResponseEntity<String> postOrder(UUID customerId) {

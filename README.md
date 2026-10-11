@@ -15,8 +15,9 @@ The foundation currently includes:
 - PostgreSQL 16
 - Three-node Kafka cluster in KRaft mode
 - Kafka Schema Registry
+- Avro `OrderCreated` envelope validated by Schema Registry with BACKWARD compatibility
 - Initial Kafka topics with six partitions and replication factor three
-- Transactional outbox publisher that sends order events to Kafka
+- Transactional outbox publisher that sends `OrderCreated` events to Kafka
 
 ## Repository Layout
 
@@ -27,6 +28,8 @@ event-forge/
 |   |-- payment-service/
 |   |-- inventory-service/
 |   `-- notification-service/
+|-- contracts/
+|   `-- kafka-schemas/
 |-- infrastructure/
 |   `-- kafka/
 |-- docker-compose.yml
@@ -66,6 +69,8 @@ docker compose down -v
 
 Default local credentials are defined in `docker-compose.yml`. Copy
 `.env.example` to `.env` only when overriding those defaults.
+The default Schema Registry compatibility level is `BACKWARD`; configure it with
+`SCHEMA_REGISTRY_COMPATIBILITY_LEVEL` when you need to override the local default.
 
 ## Run the Services
 
@@ -122,11 +127,16 @@ docker compose config
 ```
 
 After starting the services, check the health endpoints with `curl.exe` or a
-browser. Schema Registry should return an empty subject list until event
-contracts are introduced:
+browser. The Schema Registry subject list is empty until the first order event
+has been published. An Avro `OrderCreated` event is registered under the
+`orders-value` subject:
 
 ```powershell
+curl.exe -X POST http://localhost:8080/orders `
+  -H "Content-Type: application/json" `
+  --data-raw '{ "customerId": "11111111-1111-4111-8111-111111111111", "totalAmount": 149.99, "currency": "USD" }'
 curl.exe http://localhost:8085/subjects
+curl.exe http://localhost:8085/subjects/orders-value/versions/latest
 ```
 
 ## Architectural Direction

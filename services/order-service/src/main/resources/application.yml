@@ -6,7 +6,9 @@ spring:
     producer:
       acks: all
       key-serializer: org.apache.kafka.common.serialization.StringSerializer
-      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+      properties:
+        "[schema.registry.url]": ${SCHEMA_REGISTRY_URL:http://localhost:8085}
   datasource:
     url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:eventforge}
     username: ${POSTGRES_USER:eventforge}
