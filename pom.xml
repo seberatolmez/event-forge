@@ -33,6 +33,14 @@
         <avro.version>1.11.3</avro.version>
     </properties>
 
+    <dependencies>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <optional>true</optional>
+        </dependency>
+    </dependencies>
+
     <repositories>
         <!-- Confluent artifacts (kafka-avro-serializer) are not published to Maven Central. -->
         <repository>

@@ -3,6 +3,7 @@ package com.eventforge.order.service;
 import java.math.BigDecimal;
 import java.util.UUID;
 
+import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -14,20 +15,12 @@ import com.eventforge.order.repository.OrderRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Service
+@RequiredArgsConstructor
 public class OrderService {
 
     private final OrderRepository orderRepository;
     private final OutboxEventRepository outboxEventRepository;
     private final ObjectMapper objectMapper;
-
-    public OrderService(
-            OrderRepository orderRepository,
-            OutboxEventRepository outboxEventRepository,
-            ObjectMapper objectMapper) {
-        this.orderRepository = orderRepository;
-        this.outboxEventRepository = outboxEventRepository;
-        this.objectMapper = objectMapper;
-    }
 
     @Transactional
     public Order createOrder(UUID customerId, BigDecimal totalAmount, String currency) {

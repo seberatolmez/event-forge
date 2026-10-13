@@ -15,7 +15,7 @@ public class SimulatedPaymentProvider {
     private final BigDecimal declineAbove;
 
     public SimulatedPaymentProvider(
-            @Value("${eventforge.payment.simulator.decline-above:1000.00}") BigDecimal declineAbove) {
+            @Value("${eventforge.payment.simulator.decline-above}") BigDecimal declineAbove) {
         if (declineAbove == null || declineAbove.signum() <= 0) {
             throw new IllegalArgumentException("payment decline threshold must be greater than zero");
         }

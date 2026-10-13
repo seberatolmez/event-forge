@@ -3,6 +3,9 @@ package com.eventforge.order.outbox;
 import java.time.Instant;
 import java.util.UUID;
 
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.annotations.UuidGenerator;
@@ -17,6 +20,8 @@ import jakarta.persistence.Table;
 
 @Entity
 @Table(name = "outbox_events", schema = "order_service")
+@Getter
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class OutboxEvent {
 
     @Id
@@ -49,9 +54,6 @@ public class OutboxEvent {
 
     @Column(name = "retry_count", nullable = false)
     private int retryCount;
-
-    protected OutboxEvent() {
-    }
 
     private OutboxEvent(String aggregateType, UUID aggregateId, String eventType, int eventVersion, JsonNode payload) {
         this.aggregateType = aggregateType;
@@ -86,40 +88,8 @@ public class OutboxEvent {
         return new OutboxEvent(aggregateType, aggregateId, eventType, eventVersion, payload);
     }
 
-    public UUID getId() {
-        return id;
-    }
-
-    public String getAggregateType() {
-        return aggregateType;
-    }
-
-    public UUID getAggregateId() {
-        return aggregateId;
-    }
-
-    public String getEventType() {
-        return eventType;
-    }
-
-    public int getEventVersion() {
-        return eventVersion;
-    }
-
     public JsonNode getPayload() {
         return payload.deepCopy();
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Instant getPublishedAt() {
-        return publishedAt;
-    }
-
-    public int getRetryCount() {
-        return retryCount;
     }
 
     public void markPublished(Instant publishedAt) {

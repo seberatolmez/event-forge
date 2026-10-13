@@ -1,9 +1,10 @@
 package com.eventforge.payment.service;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 
 import com.eventforge.contracts.order.OrderCreated;
 import com.eventforge.contracts.order.OrderCreatedPayload;
@@ -17,31 +18,20 @@ import com.eventforge.payment.repository.PaymentRepository;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 @Service
+@RequiredArgsConstructor
+@Slf4j
 public class PaymentProcessor {
-
-    private static final Logger logger = LoggerFactory.getLogger(PaymentProcessor.class);
 
     private final PaymentRepository paymentRepository;
     private final OutboxEventRepository outboxEventRepository;
     private final SimulatedPaymentProvider simulatedPaymentProvider;
     private final ObjectMapper objectMapper;
 
-    public PaymentProcessor(
-            PaymentRepository paymentRepository,
-            OutboxEventRepository outboxEventRepository,
-            SimulatedPaymentProvider simulatedPaymentProvider,
-            ObjectMapper objectMapper) {
-        this.paymentRepository = paymentRepository;
-        this.outboxEventRepository = outboxEventRepository;
-        this.simulatedPaymentProvider = simulatedPaymentProvider;
-        this.objectMapper = objectMapper;
-    }
-
     @Transactional
     public boolean processOrderCreated(OrderCreated orderCreated) {
         OrderCreatedPayload order = orderCreated.getPayload();
         if (paymentRepository.existsByOrderId(order.getOrderId())) {
-            logger.info("Ignoring duplicate OrderCreated event for order {}", order.getOrderId());
+            log.info("Ignoring duplicate OrderCreated event for order {}", order.getOrderId());
             return false;
         }
 

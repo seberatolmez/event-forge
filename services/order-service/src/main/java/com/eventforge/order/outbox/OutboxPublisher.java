@@ -9,14 +9,14 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+
+import lombok.extern.slf4j.Slf4j;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -27,10 +27,9 @@ import com.eventforge.contracts.order.OrderCreatedPayload;
 import com.fasterxml.jackson.databind.JsonNode;
 
 @Component
-@ConditionalOnProperty(prefix = "eventforge.outbox.publisher", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "eventforge.outbox.publisher", name = "enabled", havingValue = "true")
+@Slf4j
 public class OutboxPublisher {
-
-    private static final Logger logger = LoggerFactory.getLogger(OutboxPublisher.class);
 
     private final OutboxEventRepository outboxEventRepository;
     private final KafkaTemplate<String, OrderCreated> kafkaTemplate;
@@ -43,9 +42,9 @@ public class OutboxPublisher {
             OutboxEventRepository outboxEventRepository,
             KafkaTemplate<String, OrderCreated> kafkaTemplate,
             MeterRegistry meterRegistry,
-            @Value("${eventforge.outbox.publisher.batch-size:100}") int batchSize,
-            @Value("${eventforge.outbox.publisher.send-timeout-ms:10000}") long sendTimeoutMs,
-            @Value("${eventforge.outbox.publisher.orders-topic:orders}") String ordersTopic) {
+            @Value("${eventforge.outbox.publisher.batch-size}") int batchSize,
+            @Value("${eventforge.outbox.publisher.send-timeout-ms}") long sendTimeoutMs,
+            @Value("${eventforge.outbox.publisher.orders-topic}") String ordersTopic) {
         this.outboxEventRepository = outboxEventRepository;
         this.kafkaTemplate = kafkaTemplate;
         this.meterRegistry = meterRegistry;
@@ -54,7 +53,7 @@ public class OutboxPublisher {
         this.ordersTopic = ordersTopic;
     }
 
-    @Scheduled(fixedDelayString = "${eventforge.outbox.publisher.poll-interval-ms:1000}")
+    @Scheduled(fixedDelayString = "${eventforge.outbox.publisher.poll-interval-ms}")
     @Transactional
     public void publishPendingEvents() {
         List<OutboxEvent> events = outboxEventRepository.findUnpublishedForUpdate(batchSize);
@@ -136,7 +135,7 @@ public class OutboxPublisher {
                 .tag("event_type", event.getEventType())
                 .register(meterRegistry)
                 .increment();
-        logger.warn("Failed to publish outbox event {}; it will be retried", event.getId(), exception);
+        log.warn("Failed to publish outbox event {}; it will be retried", event.getId(), exception);
     }
 
     private byte[] headerValue(String value) {
