@@ -100,6 +100,9 @@
                         </goals>
                         <configuration>
                             <sourceDirectory>${project.basedir}/../../contracts/kafka-schemas</sourceDirectory>
+                            <includes>
+                                <include>order/OrderCreated.avsc</include>
+                            </includes>
                             <stringType>String</stringType>
                             <enableDecimalLogicalType>true</enableDecimalLogicalType>
                         </configuration>

@@ -10,14 +10,17 @@ event contracts, and observability.
 The foundation currently includes:
 
 - Java 21 and Spring Boot 3.5 Maven baseline
-- Four independently runnable Spring Boot service skeletons
+- Four independently runnable Spring Boot services
+- Order Service that stores orders and publishes `OrderCreated` from a transactional outbox
+- Payment Service that consumes `OrderCreated`, persists simulated outcomes, and publishes payment events
 - Actuator health endpoints for every service
 - PostgreSQL 16
 - Three-node Kafka cluster in KRaft mode
 - Kafka Schema Registry
 - Avro `OrderCreated` envelope validated by Schema Registry with BACKWARD compatibility
 - Initial Kafka topics with six partitions and replication factor three
-- Transactional outbox publisher that sends `OrderCreated` events to Kafka
+- Transactional outbox publishers for order and payment events
+- Avro `PaymentCompleted` and `PaymentFailed` contracts with separate Schema Registry subjects
 
 ## Repository Layout
 
@@ -47,8 +50,9 @@ Ensure these tools are available on `PATH`.
 
 ## Start Infrastructure
 
-The Compose file starts PostgreSQL, the Kafka brokers, Schema Registry, and an
-initialization container that creates the Kafka topics.
+The Compose file starts PostgreSQL, the Kafka brokers, Schema Registry, the
+order and payment services, and an initialization container that creates the
+Kafka topics.
 
 ```powershell
 docker compose up -d
@@ -113,8 +117,31 @@ The outbox publisher polls every second by default, processes up to 100 events
 per batch, and waits up to 10 seconds for each Kafka acknowledgement. These can
 be configured with `OUTBOX_PUBLISHER_POLL_INTERVAL_MS`,
 `OUTBOX_PUBLISHER_BATCH_SIZE`, and `OUTBOX_PUBLISHER_SEND_TIMEOUT_MS`. Publisher
-successes, failures, and duration are available through the order service's
-`/actuator/metrics` endpoint.
+successes, failures, and duration are available through the order and payment
+services' `/actuator/metrics` endpoints.
+
+## Payment Flow
+
+After an order is created, the payment consumer in group `payment-service`
+processes its `OrderCreated` event asynchronously. It persists the payment and
+the resulting `PaymentCompleted` or `PaymentFailed` event in one database
+transaction. A separate outbox publisher sends that event to the `payments`
+topic with `orderId` as the Kafka key.
+
+The simulated provider approves amounts at or below `1000.00` and declines
+amounts above that threshold. Override it with `PAYMENT_SIMULATOR_DECLINE_ABOVE`.
+The database's unique constraint on `payments.order_id` and an existence check
+prevent duplicate `OrderCreated` deliveries from creating another payment.
+
+Consumer offsets are acknowledged only after the payment transaction commits.
+Infrastructure errors retry with a backoff and are not skipped; a failing record
+can block its consumer until the problem is resolved. Retry and DLQ topics are
+planned for a later phase.
+
+Payment event schemas use `TopicRecordNameStrategy`, registering independently
+under `payments-com.eventforge.contracts.payment.PaymentCompleted` and
+`payments-com.eventforge.contracts.payment.PaymentFailed`. Both record types can
+therefore share `payments` without sharing one compatibility subject.
 
 ## Verify Setup
 
@@ -127,16 +154,22 @@ docker compose config
 ```
 
 After starting the services, check the health endpoints with `curl.exe` or a
-browser. The Schema Registry subject list is empty until the first order event
-has been published. An Avro `OrderCreated` event is registered under the
-`orders-value` subject:
+browser. Create an order with a typical amount to produce a completed payment;
+use an amount above the configured threshold to produce a failed payment:
 
 ```powershell
 curl.exe -X POST http://localhost:8080/orders `
   -H "Content-Type: application/json" `
   --data-raw '{ "customerId": "11111111-1111-4111-8111-111111111111", "totalAmount": 149.99, "currency": "USD" }'
+curl.exe -X POST http://localhost:8080/orders `
+  -H "Content-Type: application/json" `
+  --data-raw '{ "customerId": "22222222-2222-4222-8222-222222222222", "totalAmount": 1500.00, "currency": "USD" }'
 curl.exe http://localhost:8085/subjects
 curl.exe http://localhost:8085/subjects/orders-value/versions/latest
+curl.exe http://localhost:8085/subjects/payments-com.eventforge.contracts.payment.PaymentCompleted/versions/latest
+curl.exe http://localhost:8085/subjects/payments-com.eventforge.contracts.payment.PaymentFailed/versions/latest
+
+docker compose exec postgres psql -U eventforge -d eventforge -c "SELECT order_id, amount, currency, status, provider_reference, failure_reason FROM payment_service.payments;"
 ```
 
 ## Architectural Direction
