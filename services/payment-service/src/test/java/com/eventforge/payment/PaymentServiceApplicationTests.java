@@ -30,7 +30,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 
 @AutoConfigureMockMvc
 @SpringBootTest(properties = {
-        "eventforge.outbox.publisher.enabled=false"
+        "eventforge.outbox.publisher.enabled=false",
+        "eventforge.payment.consumer.enabled=false"
 })
 @Testcontainers(disabledWithoutDocker = true)
 class PaymentServiceApplicationTests {

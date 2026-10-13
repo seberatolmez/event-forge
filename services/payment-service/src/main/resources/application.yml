@@ -10,6 +10,17 @@ spring:
       properties:
         "[schema.registry.url]": ${SCHEMA_REGISTRY_URL:http://localhost:8085}
         "[value.subject.name.strategy]": io.confluent.kafka.serializers.subject.TopicRecordNameStrategy
+    consumer:
+      group-id: ${PAYMENT_CONSUMER_GROUP_ID:payment-service}
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+      properties:
+        "[schema.registry.url]": ${SCHEMA_REGISTRY_URL:http://localhost:8085}
+        "[specific.avro.reader]": true
+    listener:
+      ack-mode: manual_immediate
   datasource:
     url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:eventforge}
     username: ${POSTGRES_USER:eventforge}
@@ -29,6 +40,14 @@ server:
   port: ${SERVER_PORT:8081}
 
 eventforge:
+  payment:
+    consumer:
+      enabled: ${PAYMENT_CONSUMER_ENABLED:true}
+      orders-topic: ${KAFKA_ORDERS_TOPIC:orders}
+      group-id: ${PAYMENT_CONSUMER_GROUP_ID:payment-service}
+      retry-backoff-ms: ${PAYMENT_CONSUMER_RETRY_BACKOFF_MS:1000}
+    simulator:
+      decline-above: ${PAYMENT_SIMULATOR_DECLINE_ABOVE:1000.00}
   outbox:
     publisher:
       enabled: ${OUTBOX_PUBLISHER_ENABLED:true}

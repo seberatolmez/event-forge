@@ -74,6 +74,11 @@
             <artifactId>postgresql</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>kafka</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
@@ -91,6 +96,7 @@
                         <configuration>
                             <sourceDirectory>${project.basedir}/../../contracts/kafka-schemas</sourceDirectory>
                             <includes>
+                                <include>order/OrderCreated.avsc</include>
                                 <include>payment/PaymentCompleted.avsc</include>
                                 <include>payment/PaymentFailed.avsc</include>
                             </includes>
