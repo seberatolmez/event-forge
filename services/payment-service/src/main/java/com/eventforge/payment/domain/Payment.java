@@ -4,6 +4,9 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.UUID;
 
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 import org.hibernate.annotations.UuidGenerator;
@@ -17,6 +20,8 @@ import jakarta.persistence.Table;
 
 @Entity
 @Table(name = "payments", schema = "payment_service")
+@Getter
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Payment {
 
     private static final int MAX_REASON_LENGTH = 255;
@@ -52,9 +57,6 @@ public class Payment {
     @UpdateTimestamp
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
-
-    protected Payment() {
-    }
 
     private Payment(UUID orderId, BigDecimal amount, String currency) {
         this.orderId = orderId;
@@ -112,41 +114,5 @@ public class Payment {
             throw new InvalidPaymentTransitionException(
                     "payment in status %s cannot transition to a final outcome".formatted(status));
         }
-    }
-
-    public UUID getId() {
-        return id;
-    }
-
-    public UUID getOrderId() {
-        return orderId;
-    }
-
-    public BigDecimal getAmount() {
-        return amount;
-    }
-
-    public String getCurrency() {
-        return currency;
-    }
-
-    public PaymentStatus getStatus() {
-        return status;
-    }
-
-    public String getProviderReference() {
-        return providerReference;
-    }
-
-    public String getFailureReason() {
-        return failureReason;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
     }
 }

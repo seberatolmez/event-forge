@@ -6,6 +6,9 @@ import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
 
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
 import org.hibernate.annotations.CreationTimestamp;
 import org.hibernate.annotations.UpdateTimestamp;
 import org.hibernate.annotations.UuidGenerator;
@@ -19,6 +22,8 @@ import jakarta.persistence.Table;
 
 @Entity
 @Table(name = "orders", schema = "order_service")
+@Getter
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
 public class Order {
 
     private static final Map<OrderStatus, Set<OrderStatus>> ALLOWED_TRANSITIONS = Map.of(
@@ -64,9 +69,6 @@ public class Order {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    protected Order() {
-    }
-
     private Order(UUID customerId, BigDecimal totalAmount, String currency) {
         this.id = null;
         this.customerId = customerId;
@@ -104,33 +106,5 @@ public class Order {
 
     public boolean canTransitionTo(OrderStatus target) {
         return status == target || ALLOWED_TRANSITIONS.get(status).contains(target);
-    }
-
-    public UUID getId() {
-        return id;
-    }
-
-    public UUID getCustomerId() {
-        return customerId;
-    }
-
-    public BigDecimal getTotalAmount() {
-        return totalAmount;
-    }
-
-    public String getCurrency() {
-        return currency;
-    }
-
-    public OrderStatus getStatus() {
-        return status;
-    }
-
-    public Instant getCreatedAt() {
-        return createdAt;
-    }
-
-    public Instant getUpdatedAt() {
-        return updatedAt;
     }
 }
