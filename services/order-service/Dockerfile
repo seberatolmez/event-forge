@@ -3,6 +3,9 @@ FROM maven:3.9-eclipse-temurin-21 AS build
 WORKDIR /workspace
 COPY pom.xml ./
 COPY services/order-service/pom.xml services/order-service/pom.xml
+COPY services/payment-service/pom.xml services/payment-service/pom.xml
+COPY services/inventory-service/pom.xml services/inventory-service/pom.xml
+COPY services/notification-service/pom.xml services/notification-service/pom.xml
 COPY services/order-service/src services/order-service/src
 COPY contracts contracts
 RUN mvn -q -pl services/order-service -am -DskipTests package

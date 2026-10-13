@@ -16,6 +16,11 @@ replication factor of three:
 - `inventory.retry`
 - `inventory.dlq`
 
-Business events use the aggregate identifier as their Kafka key. Topic
-provisioning is kept in the infrastructure layer so services can start with a
-known Kafka topology.
+Order-related events use `orderId` as their Kafka key so events for the same
+order remain partitioned together. Topic provisioning is kept in the
+infrastructure layer so services can start with a known Kafka topology.
+
+The Payment Service writes both `PaymentCompleted` and `PaymentFailed` to the
+`payments` topic with `orderId` as the record key. It uses
+`TopicRecordNameStrategy`, so the event contracts register under separate
+subjects and evolve independently.

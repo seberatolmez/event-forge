@@ -184,6 +184,41 @@ services:
     networks:
       - eventforge
 
+  payment-service:
+    build:
+      context: .
+      dockerfile: services/payment-service/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka-1:
+        condition: service_healthy
+      kafka-2:
+        condition: service_healthy
+      kafka-3:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      schema-registry:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_DB: ${POSTGRES_DB:-eventforge}
+      POSTGRES_USER: ${POSTGRES_USER:-eventforge}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-eventforge}
+      KAFKA_BOOTSTRAP_SERVERS: kafka-1:29092,kafka-2:29092,kafka-3:29092
+      SCHEMA_REGISTRY_URL: http://schema-registry:8081
+      PAYMENT_SIMULATOR_DECLINE_ABOVE: ${PAYMENT_SIMULATOR_DECLINE_ABOVE:-1000.00}
+    ports:
+      - "${PAYMENT_SERVICE_PORT:-8081}:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/actuator/health >/dev/null 2>&1 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks:
+      - eventforge
+
   kafka-init:
     image: confluentinc/cp-kafka:7.7.1
     depends_on:
