@@ -22,10 +22,16 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 
 import com.eventforge.payment.domain.Payment;
 import com.eventforge.payment.domain.PaymentStatus;
+import com.eventforge.payment.outbox.OutboxEvent;
+import com.eventforge.payment.outbox.OutboxEventRepository;
 import com.eventforge.payment.repository.PaymentRepository;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 
 @AutoConfigureMockMvc
-@SpringBootTest
+@SpringBootTest(properties = {
+        "eventforge.outbox.publisher.enabled=false"
+})
 @Testcontainers(disabledWithoutDocker = true)
 class PaymentServiceApplicationTests {
 
@@ -38,6 +44,12 @@ class PaymentServiceApplicationTests {
 
     @Autowired
     private PaymentRepository paymentRepository;
+
+    @Autowired
+    private OutboxEventRepository outboxEventRepository;
+
+    @Autowired
+    private ObjectMapper objectMapper;
 
     @Test
     void contextLoads() {
@@ -74,6 +86,34 @@ class PaymentServiceApplicationTests {
         assertThatThrownBy(() -> paymentRepository.saveAndFlush(
                 Payment.create(orderId, new BigDecimal("149.99"), "USD")))
                 .isInstanceOf(DataIntegrityViolationException.class);
+    }
+
+    @Test
+    void outboxEventPersistsEnvelopeMetadataAndJsonPayload() throws Exception {
+        UUID paymentId = UUID.randomUUID();
+        UUID orderId = UUID.randomUUID();
+        JsonNode payload = objectMapper.readTree("""
+                {
+                  "paymentId": "%s",
+                  "orderId": "%s",
+                  "amount": 149.99,
+                  "currency": "USD",
+                  "providerReference": "simulated-payment-123"
+                }
+                """.formatted(paymentId, orderId));
+
+        OutboxEvent saved = outboxEventRepository.saveAndFlush(
+                OutboxEvent.create("Payment", paymentId, "PaymentCompleted", 1, payload));
+
+        OutboxEvent fetched = outboxEventRepository.findById(saved.getId()).orElseThrow();
+        assertThat(fetched.getAggregateType()).isEqualTo("Payment");
+        assertThat(fetched.getAggregateId()).isEqualTo(paymentId);
+        assertThat(fetched.getEventType()).isEqualTo("PaymentCompleted");
+        assertThat(fetched.getEventVersion()).isEqualTo(1);
+        assertThat(fetched.getPayload()).isEqualTo(payload);
+        assertThat(fetched.getCreatedAt()).isNotNull();
+        assertThat(fetched.getPublishedAt()).isNull();
+        assertThat(fetched.getRetryCount()).isZero();
     }
 
 }
