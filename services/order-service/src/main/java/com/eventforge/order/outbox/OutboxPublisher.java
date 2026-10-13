@@ -9,14 +9,14 @@ import java.util.UUID;
 import java.util.concurrent.TimeUnit;
 
 import org.apache.kafka.clients.producer.ProducerRecord;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
+
+import lombok.extern.slf4j.Slf4j;
 
 import io.micrometer.core.instrument.Counter;
 import io.micrometer.core.instrument.MeterRegistry;
@@ -28,9 +28,8 @@ import com.fasterxml.jackson.databind.JsonNode;
 
 @Component
 @ConditionalOnProperty(prefix = "eventforge.outbox.publisher", name = "enabled", havingValue = "true")
+@Slf4j
 public class OutboxPublisher {
-
-    private static final Logger logger = LoggerFactory.getLogger(OutboxPublisher.class);
 
     private final OutboxEventRepository outboxEventRepository;
     private final KafkaTemplate<String, OrderCreated> kafkaTemplate;
@@ -136,7 +135,7 @@ public class OutboxPublisher {
                 .tag("event_type", event.getEventType())
                 .register(meterRegistry)
                 .increment();
-        logger.warn("Failed to publish outbox event {}; it will be retried", event.getId(), exception);
+        log.warn("Failed to publish outbox event {}; it will be retried", event.getId(), exception);
     }
 
     private byte[] headerValue(String value) {
