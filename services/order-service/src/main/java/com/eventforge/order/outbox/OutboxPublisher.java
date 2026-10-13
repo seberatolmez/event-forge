@@ -27,7 +27,7 @@ import com.eventforge.contracts.order.OrderCreatedPayload;
 import com.fasterxml.jackson.databind.JsonNode;
 
 @Component
-@ConditionalOnProperty(prefix = "eventforge.outbox.publisher", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "eventforge.outbox.publisher", name = "enabled", havingValue = "true")
 public class OutboxPublisher {
 
     private static final Logger logger = LoggerFactory.getLogger(OutboxPublisher.class);
@@ -43,9 +43,9 @@ public class OutboxPublisher {
             OutboxEventRepository outboxEventRepository,
             KafkaTemplate<String, OrderCreated> kafkaTemplate,
             MeterRegistry meterRegistry,
-            @Value("${eventforge.outbox.publisher.batch-size:100}") int batchSize,
-            @Value("${eventforge.outbox.publisher.send-timeout-ms:10000}") long sendTimeoutMs,
-            @Value("${eventforge.outbox.publisher.orders-topic:orders}") String ordersTopic) {
+            @Value("${eventforge.outbox.publisher.batch-size}") int batchSize,
+            @Value("${eventforge.outbox.publisher.send-timeout-ms}") long sendTimeoutMs,
+            @Value("${eventforge.outbox.publisher.orders-topic}") String ordersTopic) {
         this.outboxEventRepository = outboxEventRepository;
         this.kafkaTemplate = kafkaTemplate;
         this.meterRegistry = meterRegistry;
@@ -54,7 +54,7 @@ public class OutboxPublisher {
         this.ordersTopic = ordersTopic;
     }
 
-    @Scheduled(fixedDelayString = "${eventforge.outbox.publisher.poll-interval-ms:1000}")
+    @Scheduled(fixedDelayString = "${eventforge.outbox.publisher.poll-interval-ms}")
     @Transactional
     public void publishPendingEvents() {
         List<OutboxEvent> events = outboxEventRepository.findUnpublishedForUpdate(batchSize);

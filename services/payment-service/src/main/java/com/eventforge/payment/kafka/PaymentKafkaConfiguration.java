@@ -14,7 +14,7 @@ public class PaymentKafkaConfiguration {
 
     @Bean
     CommonErrorHandler paymentConsumerErrorHandler(
-            @Value("${eventforge.payment.consumer.retry-backoff-ms:1000}") long retryBackoffMs) {
+            @Value("${eventforge.payment.consumer.retry-backoff-ms}") long retryBackoffMs) {
         DefaultErrorHandler errorHandler = new DefaultErrorHandler(
                 new FixedBackOff(retryBackoffMs, FixedBackOff.UNLIMITED_ATTEMPTS));
         errorHandler.setClassifications(Map.of(Exception.class, true), true);

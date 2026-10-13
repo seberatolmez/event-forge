@@ -12,7 +12,7 @@ import com.eventforge.contracts.order.OrderCreated;
 import com.eventforge.payment.service.PaymentProcessor;
 
 @Component
-@ConditionalOnProperty(prefix = "eventforge.payment.consumer", name = "enabled", havingValue = "true", matchIfMissing = true)
+@ConditionalOnProperty(prefix = "eventforge.payment.consumer", name = "enabled", havingValue = "true")
 public class OrderCreatedListener {
 
     private static final Logger logger = LoggerFactory.getLogger(OrderCreatedListener.class);
@@ -24,8 +24,8 @@ public class OrderCreatedListener {
     }
 
     @KafkaListener(
-            topics = "${eventforge.payment.consumer.orders-topic:orders}",
-            groupId = "${eventforge.payment.consumer.group-id:payment-service}")
+            topics = "${eventforge.payment.consumer.orders-topic}",
+            groupId = "${eventforge.payment.consumer.group-id}")
     public void consume(ConsumerRecord<String, Object> record, Acknowledgment acknowledgment) {
         Object event = record.value();
         if (!(event instanceof OrderCreated orderCreated)) {
