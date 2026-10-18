@@ -52,6 +52,7 @@ import com.eventforge.contracts.order.OrderCreated;
 import com.eventforge.contracts.order.OrderCreatedPayload;
 import com.eventforge.contracts.payment.PaymentCompleted;
 import com.eventforge.contracts.payment.PaymentFailed;
+import com.eventforge.payment.dedup.ProcessedEventRepository;
 import com.eventforge.payment.domain.Payment;
 import com.eventforge.payment.domain.PaymentStatus;
 import com.eventforge.payment.outbox.OutboxEvent;
@@ -121,6 +122,9 @@ class PaymentOutboxPublisherIntegrationTest {
 
     @Autowired
     PaymentRepository paymentRepository;
+
+    @Autowired
+    ProcessedEventRepository processedEventRepository;
 
     @Autowired
     KafkaTemplate<String, SpecificRecord> kafkaTemplate;
@@ -280,6 +284,44 @@ class PaymentOutboxPublisherIntegrationTest {
         });
     }
 
+    @Test
+    void duplicateEventIdDeliveryProducesExactlyOneSideEffect() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        UUID eventId = UUID.randomUUID();
+        OrderCreated order = orderCreated(eventId, orderId, "149.99");
+
+        long lastInputOffset = sendOrderCreated(order);
+        lastInputOffset = Math.max(lastInputOffset, sendOrderCreated(order));
+        lastInputOffset = Math.max(lastInputOffset, sendOrderCreated(order));
+
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
+            assertThat(paymentRepository.findByOrderId(orderId))
+                    .hasValueSatisfying(payment -> {
+                        assertThat(payment.getStatus()).isEqualTo(PaymentStatus.COMPLETED);
+                        assertThat(outboxEventRepository.findAllByAggregateId(payment.getId())).hasSize(1);
+                    });
+            assertThat(processedEventRepository.existsById(eventId)).isTrue();
+        });
+        awaitPaymentConsumerCommitted(lastInputOffset);
+
+        // A distinct event id must create a distinct, independently tracked payment.
+        UUID secondEventId = UUID.randomUUID();
+        UUID secondOrderId = UUID.randomUUID();
+        sendOrderCreated(orderCreated(secondEventId, secondOrderId, "149.99"));
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
+            assertThat(paymentRepository.findByOrderId(secondOrderId))
+                    .hasValueSatisfying(payment -> {
+                        assertThat(payment.getStatus()).isEqualTo(PaymentStatus.COMPLETED);
+                        assertThat(outboxEventRepository.findAllByAggregateId(payment.getId())).hasSize(1);
+                    });
+            assertThat(processedEventRepository.existsById(secondEventId)).isTrue();
+        });
+        awaitPaymentConsumerCommitted(lastInputOffset + 1);
+
+        List<ConsumerRecord<String, SpecificRecord>> records = consumePaymentEvents(Set.of(orderId, secondOrderId));
+        assertThat(records).hasSize(2);
+    }
+
     private List<ConsumerRecord<String, SpecificRecord>> consumePaymentEvents(Set<UUID> orderIds) {
         Properties properties = new Properties();
         properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
@@ -380,8 +422,12 @@ class PaymentOutboxPublisherIntegrationTest {
     }
 
     private OrderCreated orderCreated(UUID orderId, String amount) {
+        return orderCreated(UUID.randomUUID(), orderId, amount);
+    }
+
+    private OrderCreated orderCreated(UUID eventId, UUID orderId, String amount) {
         return OrderCreated.newBuilder()
-                .setEventId(UUID.randomUUID())
+                .setEventId(eventId)
                 .setEventType("OrderCreated")
                 .setEventVersion(1)
                 .setOccurredAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
