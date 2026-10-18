@@ -10,6 +10,4 @@ import com.eventforge.payment.domain.Payment;
 public interface PaymentRepository extends JpaRepository<Payment, UUID> {
 
     Optional<Payment> findByOrderId(UUID orderId);
-
-    boolean existsByOrderId(UUID orderId);
 }
