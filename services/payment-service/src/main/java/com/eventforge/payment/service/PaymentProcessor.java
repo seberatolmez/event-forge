@@ -8,6 +8,8 @@ import lombok.extern.slf4j.Slf4j;
 
 import com.eventforge.contracts.order.OrderCreated;
 import com.eventforge.contracts.order.OrderCreatedPayload;
+import com.eventforge.payment.dedup.ProcessedEvent;
+import com.eventforge.payment.dedup.ProcessedEventRepository;
 import com.eventforge.payment.domain.Payment;
 import com.eventforge.payment.outbox.OutboxEvent;
 import com.eventforge.payment.outbox.OutboxEventRepository;
@@ -24,17 +26,18 @@ public class PaymentProcessor {
 
     private final PaymentRepository paymentRepository;
     private final OutboxEventRepository outboxEventRepository;
+    private final ProcessedEventRepository processedEventRepository;
     private final SimulatedPaymentProvider simulatedPaymentProvider;
     private final ObjectMapper objectMapper;
 
     @Transactional
     public boolean processOrderCreated(OrderCreated orderCreated) {
-        OrderCreatedPayload order = orderCreated.getPayload();
-        if (paymentRepository.existsByOrderId(order.getOrderId())) {
-            log.info("Ignoring duplicate OrderCreated event for order {}", order.getOrderId());
+        if (processedEventRepository.existsById(orderCreated.getEventId())) {
+            log.info("Ignoring already processed OrderCreated event {}", orderCreated.getEventId());
             return false;
         }
 
+        OrderCreatedPayload order = orderCreated.getPayload();
         Payment payment = paymentRepository.save(Payment.create(
                 order.getOrderId(), order.getTotalAmount(), order.getCurrency().toString()));
         PaymentProviderResult result = simulatedPaymentProvider.charge(payment);
@@ -65,6 +68,10 @@ public class PaymentProcessor {
                             payment.getFailureReason())));
         }
         outboxEventRepository.save(event);
+        processedEventRepository.save(ProcessedEvent.create(
+                orderCreated.getEventId(),
+                orderCreated.getEventType().toString(),
+                orderCreated.getEventVersion()));
         return true;
     }
 }
