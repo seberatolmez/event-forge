@@ -24,3 +24,8 @@ The Payment Service writes both `PaymentCompleted` and `PaymentFailed` to the
 `payments` topic with `orderId` as the record key. It uses
 `TopicRecordNameStrategy`, so the event contracts register under separate
 subjects and evolve independently.
+
+The Inventory Service writes `InventoryReserved` and
+`InventoryReservationFailed` to the `inventory` topic with `orderId` as the
+record key. It uses `TopicRecordNameStrategy` so both contracts have separate
+Schema Registry subjects.
