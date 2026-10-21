@@ -2,7 +2,7 @@
   "type": "record",
   "name": "OrderCreated",
   "namespace": "com.eventforge.contracts.order",
-  "doc": "OrderCreated domain event (version 1) using the common EventForge envelope.",
+  "doc": "OrderCreated domain event (version 2) using the common EventForge envelope.",
   "fields": [
     {
       "name": "eventId",
@@ -17,7 +17,7 @@
     {
       "name": "eventVersion",
       "type": "int",
-      "doc": "Version of the event contract. Version 1 for this schema."
+      "doc": "Version of the event contract. Version 2 for this schema."
     },
     {
       "name": "occurredAt",
@@ -58,6 +58,28 @@
             "name": "currency",
             "type": "string",
             "doc": "ISO 4217 currency code."
+          },
+          {
+            "name": "items",
+            "type": {
+              "type": "array",
+              "items": {
+                "type": "record",
+                "name": "OrderItemPayload",
+                "fields": [
+                  {
+                    "name": "productId",
+                    "type": {"type": "string", "logicalType": "uuid"}
+                  },
+                  {
+                    "name": "quantity",
+                    "type": "int"
+                  }
+                ]
+              }
+            },
+            "default": [],
+            "doc": "Products requested by the order. Empty for legacy version 1 events."
           }
         ]
       }

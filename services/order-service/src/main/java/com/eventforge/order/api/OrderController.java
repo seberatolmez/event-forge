@@ -3,6 +3,7 @@ package com.eventforge.order.api;
 import java.net.URI;
 import java.util.UUID;
 
+import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -14,6 +15,7 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.util.UriComponentsBuilder;
 
 import com.eventforge.order.domain.Order;
+import com.eventforge.order.domain.OrderItem;
 import com.eventforge.order.service.OrderService;
 
 @RestController
@@ -24,8 +26,14 @@ public class OrderController {
     private final OrderService orderService;
 
     @PostMapping
-    public ResponseEntity<OrderResponse> createOrder(@RequestBody CreateOrderRequest request) {
-        Order order = orderService.createOrder(request.customerId(), request.totalAmount(), request.currency());
+    public ResponseEntity<OrderResponse> createOrder(@Valid @RequestBody CreateOrderRequest request) {
+        Order order = orderService.createOrder(
+                request.customerId(),
+                request.totalAmount(),
+                request.currency(),
+                request.items().stream()
+                        .map(item -> OrderItem.create(item.productId(), item.quantity()))
+                        .toList());
         URI location = UriComponentsBuilder.fromPath("/orders/{id}").buildAndExpand(order.getId()).toUri();
         return ResponseEntity.created(location).body(OrderResponse.from(order));
     }

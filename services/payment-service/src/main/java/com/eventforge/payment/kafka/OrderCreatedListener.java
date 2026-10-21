@@ -32,7 +32,8 @@ public class OrderCreatedListener {
             acknowledgment.acknowledge();
             return;
         }
-        if (!"OrderCreated".contentEquals(orderCreated.getEventType()) || orderCreated.getEventVersion() != 1) {
+        if (!"OrderCreated".contentEquals(orderCreated.getEventType())
+                || (orderCreated.getEventVersion() != 1 && orderCreated.getEventVersion() != 2)) {
             throw new IllegalArgumentException("unsupported OrderCreated event contract version or type");
         }
 
