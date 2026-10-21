@@ -1,6 +1,40 @@
 spring:
   application:
     name: inventory-service
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092,localhost:19093,localhost:19094}
+    producer:
+      acks: all
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
+      properties:
+        "[schema.registry.url]": ${SCHEMA_REGISTRY_URL:http://localhost:8085}
+        "[value.subject.name.strategy]": io.confluent.kafka.serializers.subject.TopicRecordNameStrategy
+    consumer:
+      group-id: ${INVENTORY_CONSUMER_GROUP_ID:inventory-service}
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+      properties:
+        "[schema.registry.url]": ${SCHEMA_REGISTRY_URL:http://localhost:8085}
+        "[specific.avro.reader]": true
+    listener:
+      ack-mode: manual_immediate
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:eventforge}
+    username: ${POSTGRES_USER:eventforge}
+    password: ${POSTGRES_PASSWORD:eventforge}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: inventory_service
+  flyway:
+    schemas: inventory_service
+    default-schema: inventory_service
 
 server:
   port: ${SERVER_PORT:8082}
@@ -9,8 +43,23 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics
   endpoint:
     health:
       probes:
         enabled: true
+
+eventforge:
+  inventory:
+    consumer:
+      enabled: ${INVENTORY_CONSUMER_ENABLED:true}
+      orders-topic: ${KAFKA_ORDERS_TOPIC:orders}
+      group-id: ${INVENTORY_CONSUMER_GROUP_ID:inventory-service}
+      retry-backoff-ms: ${INVENTORY_CONSUMER_RETRY_BACKOFF_MS:1000}
+  outbox:
+    publisher:
+      enabled: ${OUTBOX_PUBLISHER_ENABLED:true}
+      poll-interval-ms: ${OUTBOX_PUBLISHER_POLL_INTERVAL_MS:1000}
+      batch-size: ${OUTBOX_PUBLISHER_BATCH_SIZE:100}
+      send-timeout-ms: ${OUTBOX_PUBLISHER_SEND_TIMEOUT_MS:10000}
+      inventory-topic: ${KAFKA_INVENTORY_TOPIC:inventory}

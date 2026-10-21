@@ -1,0 +1,94 @@
+package com.eventforge.inventory.outbox;
+
+import java.time.Instant;
+import java.util.UUID;
+
+import lombok.AccessLevel;
+import lombok.Getter;
+import lombok.NoArgsConstructor;
+import org.hibernate.annotations.CreationTimestamp;
+import org.hibernate.annotations.JdbcTypeCode;
+import org.hibernate.annotations.UuidGenerator;
+import org.hibernate.type.SqlTypes;
+
+import com.fasterxml.jackson.databind.JsonNode;
+
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.Id;
+import jakarta.persistence.Table;
+
+@Entity
+@Table(name = "outbox_events", schema = "inventory_service")
+@Getter
+@NoArgsConstructor(access = AccessLevel.PROTECTED)
+public class OutboxEvent {
+
+    @Id
+    @UuidGenerator
+    @Column(nullable = false, updatable = false)
+    private UUID id;
+
+    @Column(name = "aggregate_type", nullable = false, length = 100)
+    private String aggregateType;
+
+    @Column(name = "aggregate_id", nullable = false)
+    private UUID aggregateId;
+
+    @Column(name = "event_type", nullable = false, length = 100)
+    private String eventType;
+
+    @Column(name = "event_version", nullable = false)
+    private int eventVersion;
+
+    @JdbcTypeCode(SqlTypes.JSON)
+    @Column(nullable = false, columnDefinition = "jsonb")
+    private JsonNode payload;
+
+    @CreationTimestamp
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
+
+    @Column(name = "published_at")
+    private Instant publishedAt;
+
+    @Column(name = "retry_count", nullable = false)
+    private int retryCount;
+
+    private OutboxEvent(String aggregateType, UUID aggregateId, String eventType, int eventVersion, JsonNode payload) {
+        this.aggregateType = aggregateType;
+        this.aggregateId = aggregateId;
+        this.eventType = eventType;
+        this.eventVersion = eventVersion;
+        this.payload = payload.deepCopy();
+        this.retryCount = 0;
+    }
+
+    public static OutboxEvent create(
+            String aggregateType,
+            UUID aggregateId,
+            String eventType,
+            int eventVersion,
+            JsonNode payload) {
+        if (aggregateType == null || aggregateType.isBlank() || aggregateId == null
+                || eventType == null || eventType.isBlank() || eventVersion < 1 || payload == null) {
+            throw new IllegalArgumentException("valid outbox event metadata and payload are required");
+        }
+        return new OutboxEvent(aggregateType, aggregateId, eventType, eventVersion, payload);
+    }
+
+    public JsonNode getPayload() {
+        return payload.deepCopy();
+    }
+
+    public void markPublished(Instant publishedAt) {
+        if (publishedAt == null) {
+            throw new IllegalArgumentException("publishedAt must not be null");
+        }
+        this.publishedAt = publishedAt;
+    }
+
+    public void incrementRetryCount() {
+        this.retryCount++;
+    }
+}

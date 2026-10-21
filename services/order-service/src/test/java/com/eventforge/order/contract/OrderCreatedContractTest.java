@@ -15,6 +15,7 @@ import org.apache.avro.Schema;
 import org.junit.jupiter.api.Test;
 
 import com.eventforge.contracts.order.OrderCreated;
+import com.eventforge.contracts.order.OrderItemPayload;
 import com.eventforge.contracts.order.OrderCreatedPayload;
 
 import io.confluent.kafka.serializers.KafkaAvroDeserializer;
@@ -51,6 +52,18 @@ class OrderCreatedContractTest {
     }
 
     @Test
+    void orderCreatedItemsDefaultToEmptyForLegacyEvents() {
+        OrderCreatedPayload payload = OrderCreatedPayload.newBuilder()
+                .setOrderId(UUID.randomUUID())
+                .setCustomerId(UUID.randomUUID())
+                .setTotalAmount(new BigDecimal("10.00"))
+                .setCurrency("USD")
+                .build();
+
+        assertThat(payload.getItems()).isEmpty();
+    }
+
+    @Test
     void serializedEventRoundTripsThroughSchemaRegistryWithoutLosingData() {
         OrderCreated event = orderCreated(new BigDecimal("149.99"));
 
@@ -61,6 +74,11 @@ class OrderCreatedContractTest {
         assertThat(decoded.getOccurredAt()).isEqualTo(Instant.parse("2026-10-09T10:00:00.123Z"));
         assertThat(decoded.getPayload().getTotalAmount()).isEqualByComparingTo("149.99");
         assertThat(decoded.getPayload().getTotalAmount().scale()).isEqualTo(2);
+        assertThat(decoded.getPayload().getItems()).containsExactly(
+                OrderItemPayload.newBuilder()
+                        .setProductId(UUID.fromString("11111111-1111-4111-8111-111111111111"))
+                        .setQuantity(2)
+                        .build());
     }
 
     @Test
@@ -90,7 +108,7 @@ class OrderCreatedContractTest {
         return OrderCreated.newBuilder()
                 .setEventId(UUID.randomUUID())
                 .setEventType("OrderCreated")
-                .setEventVersion(1)
+                .setEventVersion(2)
                 .setOccurredAt(Instant.parse("2026-10-09T10:00:00.123Z"))
                 .setAggregateType("Order")
                 .setAggregateId(orderId)
@@ -99,6 +117,10 @@ class OrderCreatedContractTest {
                         .setCustomerId(UUID.randomUUID())
                         .setTotalAmount(totalAmount)
                         .setCurrency("USD")
+                        .setItems(List.of(OrderItemPayload.newBuilder()
+                                .setProductId(UUID.fromString("11111111-1111-4111-8111-111111111111"))
+                                .setQuantity(2)
+                                .build()))
                         .build())
                 .build();
     }

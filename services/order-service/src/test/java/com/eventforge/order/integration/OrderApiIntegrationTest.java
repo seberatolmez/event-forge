@@ -100,6 +100,8 @@ class OrderApiIntegrationTest {
         assertThat(outboxEvent.getPayload().path("totalAmount").decimalValue())
                 .isEqualByComparingTo(new BigDecimal("149.99"));
         assertThat(outboxEvent.getPayload().path("currency").asText()).isEqualTo("USD");
+        assertThat(outboxEvent.getPayload().path("items")).hasSize(1);
+        assertThat(outboxEvent.getPayload().path("items").get(0).path("quantity").asInt()).isEqualTo(2);
 
         assertThat(createResponse.getHeaders().getLocation().toString())
                 .isEqualTo("http://localhost:%d/orders/%s".formatted(port, orderId));
@@ -111,6 +113,7 @@ class OrderApiIntegrationTest {
         assertThat(fetched.path("id").asText()).isEqualTo(orderId.toString());
         assertThat(fetched.path("status").asText()).isEqualTo("PENDING");
         assertThat(fetched.path("customerId").asText()).isEqualTo(customerId.toString());
+        assertThat(fetched.path("items")).hasSize(1);
     }
 
     @Test
@@ -139,6 +142,26 @@ class OrderApiIntegrationTest {
         assertThat(response.getBody()).contains("currency");
     }
 
+    @Test
+    void emptyItemsAreRejected() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        String body = """
+                {
+                  "customerId": "%s",
+                  "totalAmount": 10.00,
+                  "currency": "USD",
+                  "items": []
+                }
+                """.formatted(UUID.randomUUID());
+
+        ResponseEntity<String> response = restTemplate.exchange(
+                "/orders", HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        assertThat(response.getBody()).contains("items");
+    }
+
     private ResponseEntity<String> postOrder(UUID customerId, String amount, String currency) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
@@ -146,9 +169,10 @@ class OrderApiIntegrationTest {
                 {
                   "customerId": "%s",
                   "totalAmount": %s,
-                  "currency": "%s"
+                  "currency": "%s",
+                  "items": [{"productId": "%s", "quantity": 2}]
                 }
-                """.formatted(customerId, amount, currency);
+                """.formatted(customerId, amount, currency, UUID.randomUUID());
         return restTemplate.exchange("/orders", HttpMethod.POST, new HttpEntity<>(body, headers), String.class);
     }
 }

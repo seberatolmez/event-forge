@@ -1,6 +1,5 @@
 .git
 .idea
 **/target
-services/inventory-service/src
 services/notification-service/src
 infrastructure

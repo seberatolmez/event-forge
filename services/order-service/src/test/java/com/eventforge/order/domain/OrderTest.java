@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.UUID;
 
 import org.junit.jupiter.api.Test;
@@ -19,7 +20,7 @@ class OrderTest {
 
     @Test
     void createInitializesPendingOrder() {
-        Order order = Order.create(CUSTOMER_ID, AMOUNT, "USD");
+        Order order = order();
 
         assertThat(order.getCustomerId()).isEqualTo(CUSTOMER_ID);
         assertThat(order.getTotalAmount()).isEqualByComparingTo(AMOUNT);
@@ -30,24 +31,24 @@ class OrderTest {
 
     @Test
     void createRejectsNullCustomerId() {
-        assertThatThrownBy(() -> Order.create(null, AMOUNT, "USD"))
+        assertThatThrownBy(() -> Order.create(null, AMOUNT, "USD", items()))
                 .isInstanceOf(InvalidOrderException.class)
                 .hasMessageContaining("customerId");
     }
 
     @Test
     void createRejectsNullAmount() {
-        assertThatThrownBy(() -> Order.create(CUSTOMER_ID, null, "USD"))
+        assertThatThrownBy(() -> Order.create(CUSTOMER_ID, null, "USD", items()))
                 .isInstanceOf(InvalidOrderException.class)
                 .hasMessageContaining("totalAmount");
     }
 
     @Test
     void createRejectsZeroAndNegativeAmount() {
-        assertThatThrownBy(() -> Order.create(CUSTOMER_ID, BigDecimal.ZERO, "USD"))
+        assertThatThrownBy(() -> Order.create(CUSTOMER_ID, BigDecimal.ZERO, "USD", items()))
                 .isInstanceOf(InvalidOrderException.class);
 
-        assertThatThrownBy(() -> Order.create(CUSTOMER_ID, new BigDecimal("-1.00"), "USD"))
+        assertThatThrownBy(() -> Order.create(CUSTOMER_ID, new BigDecimal("-1.00"), "USD", items()))
                 .isInstanceOf(InvalidOrderException.class);
     }
 
@@ -55,14 +56,30 @@ class OrderTest {
     @NullAndEmptySource
     @ValueSource(strings = { "usd", "USDD", "US", "US D" })
     void createRejectsInvalidCurrency(String currency) {
-        assertThatThrownBy(() -> Order.create(CUSTOMER_ID, AMOUNT, currency))
+        assertThatThrownBy(() -> Order.create(CUSTOMER_ID, AMOUNT, currency, items()))
                 .isInstanceOf(InvalidOrderException.class)
                 .hasMessageContaining("currency");
     }
 
     @Test
+    void createRejectsEmptyItems() {
+        assertThatThrownBy(() -> Order.create(CUSTOMER_ID, AMOUNT, "USD", List.of()))
+                .isInstanceOf(InvalidOrderException.class)
+                .hasMessageContaining("items");
+    }
+
+    @Test
+    void createRejectsDuplicateProducts() {
+        OrderItem item = OrderItem.create(UUID.randomUUID(), 1);
+
+        assertThatThrownBy(() -> Order.create(CUSTOMER_ID, AMOUNT, "USD", List.of(item, item)))
+                .isInstanceOf(InvalidOrderException.class)
+                .hasMessageContaining("duplicate productId");
+    }
+
+    @Test
     void successfulOrderLifecycleIsAllowed() {
-        Order order = Order.create(CUSTOMER_ID, AMOUNT, "USD");
+        Order order = order();
 
         order.transitionTo(OrderStatus.PAYMENT_COMPLETED);
         order.transitionTo(OrderStatus.INVENTORY_RESERVED);
@@ -123,7 +140,7 @@ class OrderTest {
 
     @Test
     void transitionToSameStatusIsIdempotent() {
-        Order order = Order.create(CUSTOMER_ID, AMOUNT, "USD");
+        Order order = order();
 
         order.transitionTo(OrderStatus.PENDING);
 
@@ -132,14 +149,14 @@ class OrderTest {
 
     @Test
     void transitionToNullIsRejected() {
-        Order order = Order.create(CUSTOMER_ID, AMOUNT, "USD");
+        Order order = order();
 
         assertThatThrownBy(() -> order.transitionTo(null))
                 .isInstanceOf(InvalidOrderTransitionException.class);
     }
 
     private Order orderInStatus(OrderStatus status) {
-        Order order = Order.create(CUSTOMER_ID, AMOUNT, "USD");
+        Order order = order();
         switch (status) {
             case PENDING -> { }
             case PAYMENT_COMPLETED -> order.transitionTo(OrderStatus.PAYMENT_COMPLETED);
@@ -160,5 +177,13 @@ class OrderTest {
             case CANCELLED -> order.transitionTo(OrderStatus.CANCELLED);
         }
         return order;
+    }
+
+    private Order order() {
+        return Order.create(CUSTOMER_ID, AMOUNT, "USD", items());
+    }
+
+    private List<OrderItem> items() {
+        return List.of(OrderItem.create(UUID.randomUUID(), 1));
     }
 }
