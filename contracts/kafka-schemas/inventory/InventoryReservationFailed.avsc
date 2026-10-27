@@ -1,0 +1,45 @@
+{
+  "type": "record",
+  "name": "InventoryReservationFailed",
+  "namespace": "com.eventforge.contracts.inventory",
+  "doc": "InventoryReservationFailed domain event (version 1) using the common EventForge envelope.",
+  "fields": [
+    {
+      "name": "eventId",
+      "type": {"type": "string", "logicalType": "uuid"}
+    },
+    {
+      "name": "eventType",
+      "type": "string"
+    },
+    {
+      "name": "eventVersion",
+      "type": "int"
+    },
+    {
+      "name": "occurredAt",
+      "type": {"type": "long", "logicalType": "timestamp-millis"}
+    },
+    {
+      "name": "aggregateType",
+      "type": "string"
+    },
+    {
+      "name": "aggregateId",
+      "type": {"type": "string", "logicalType": "uuid"}
+    },
+    {
+      "name": "payload",
+      "type": {
+        "type": "record",
+        "name": "InventoryReservationFailedPayload",
+        "fields": [
+          {"name": "orderId", "type": {"type": "string", "logicalType": "uuid"}},
+          {"name": "productId", "type": {"type": "string", "logicalType": "uuid"}},
+          {"name": "quantity", "type": "int"},
+          {"name": "reason", "type": "string"}
+        ]
+      }
+    }
+  ]
+}

@@ -49,6 +49,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.testcontainers.utility.DockerImageName;
 
 import com.eventforge.contracts.order.OrderCreated;
+import com.eventforge.contracts.order.OrderItemPayload;
 import com.eventforge.contracts.order.OrderCreatedPayload;
 import com.eventforge.contracts.payment.PaymentCompleted;
 import com.eventforge.contracts.payment.PaymentFailed;
@@ -198,8 +199,8 @@ class PaymentOutboxPublisherIntegrationTest {
     void consumesOrderCreatedPersistsOnePaymentAndPublishesTheMatchingOutcome() throws Exception {
         UUID completedOrderId = UUID.randomUUID();
         UUID failedOrderId = UUID.randomUUID();
-        OrderCreated completedOrder = orderCreated(completedOrderId, "149.99");
-        OrderCreated failedOrder = orderCreated(failedOrderId, "1500.00");
+        OrderCreated completedOrder = orderCreated(completedOrderId, "149.99", 1);
+        OrderCreated failedOrder = orderCreated(failedOrderId, "1500.00", 2);
 
         long lastInputOffset = sendOrderCreated(completedOrder);
         lastInputOffset = Math.max(lastInputOffset, sendOrderCreated(completedOrder));
@@ -245,7 +246,7 @@ class PaymentOutboxPublisherIntegrationTest {
         long inputOffset;
         installOutboxInsertFailure();
         try {
-            inputOffset = sendOrderCreated(orderCreated(orderId, "149.99"));
+            inputOffset = sendOrderCreated(orderCreated(orderId, "149.99", 2));
 
             await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
                 Boolean triggerWasCalled = jdbcTemplate.queryForObject(
@@ -379,11 +380,11 @@ class PaymentOutboxPublisherIntegrationTest {
         jdbcTemplate.execute("DROP SEQUENCE IF EXISTS payment_service.payment_outbox_reject_attempts");
     }
 
-    private OrderCreated orderCreated(UUID orderId, String amount) {
+    private OrderCreated orderCreated(UUID orderId, String amount, int version) {
         return OrderCreated.newBuilder()
                 .setEventId(UUID.randomUUID())
                 .setEventType("OrderCreated")
-                .setEventVersion(1)
+                .setEventVersion(version)
                 .setOccurredAt(Instant.now().truncatedTo(ChronoUnit.MILLIS))
                 .setAggregateType("Order")
                 .setAggregateId(orderId)
@@ -392,6 +393,10 @@ class PaymentOutboxPublisherIntegrationTest {
                         .setCustomerId(UUID.randomUUID())
                         .setTotalAmount(new BigDecimal(amount))
                         .setCurrency("USD")
+                        .setItems(version == 1 ? List.of() : List.of(OrderItemPayload.newBuilder()
+                                .setProductId(UUID.randomUUID())
+                                .setQuantity(1)
+                                .build()))
                         .build())
                 .build();
     }

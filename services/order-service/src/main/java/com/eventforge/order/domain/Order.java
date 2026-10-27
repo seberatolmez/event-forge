@@ -2,6 +2,8 @@ package com.eventforge.order.domain;
 
 import java.math.BigDecimal;
 import java.time.Instant;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
@@ -14,10 +16,13 @@ import org.hibernate.annotations.UpdateTimestamp;
 import org.hibernate.annotations.UuidGenerator;
 
 import jakarta.persistence.Column;
+import jakarta.persistence.CollectionTable;
+import jakarta.persistence.ElementCollection;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Id;
+import jakarta.persistence.JoinColumn;
 import jakarta.persistence.Table;
 
 @Entity
@@ -61,6 +66,10 @@ public class Order {
     @Column(nullable = false, length = 32)
     private OrderStatus status;
 
+    @ElementCollection
+    @CollectionTable(name = "order_items", schema = "order_service", joinColumns = @JoinColumn(name = "order_id"))
+    private List<OrderItem> items = new ArrayList<>();
+
     @CreationTimestamp
     @Column(name = "created_at", nullable = false, updatable = false)
     private Instant createdAt;
@@ -69,15 +78,16 @@ public class Order {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
-    private Order(UUID customerId, BigDecimal totalAmount, String currency) {
+    private Order(UUID customerId, BigDecimal totalAmount, String currency, List<OrderItem> items) {
         this.id = null;
         this.customerId = customerId;
         this.totalAmount = totalAmount;
         this.currency = currency;
         this.status = OrderStatus.PENDING;
+        this.items = new ArrayList<>(items);
     }
 
-    public static Order create(UUID customerId, BigDecimal totalAmount, String currency) {
+    public static Order create(UUID customerId, BigDecimal totalAmount, String currency, List<OrderItem> items) {
         if (customerId == null) {
             throw new InvalidOrderException("customerId must not be null");
         }
@@ -87,7 +97,13 @@ public class Order {
         if (currency == null || !currency.matches("[A-Z]{3}")) {
             throw new InvalidOrderException("currency must be a 3-letter ISO 4217 code");
         }
-        return new Order(customerId, totalAmount, currency);
+        if (items == null || items.isEmpty() || items.stream().anyMatch(item -> item == null)) {
+            throw new InvalidOrderException("items must contain at least one valid item");
+        }
+        if (items.stream().map(OrderItem::getProductId).distinct().count() != items.size()) {
+            throw new InvalidOrderException("items must not contain duplicate productId values");
+        }
+        return new Order(customerId, totalAmount, currency, items);
     }
 
     public void transitionTo(OrderStatus target) {

@@ -4,6 +4,7 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
@@ -23,6 +24,7 @@ import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.Timer;
 
 import com.eventforge.contracts.order.OrderCreated;
+import com.eventforge.contracts.order.OrderItemPayload;
 import com.eventforge.contracts.order.OrderCreatedPayload;
 import com.fasterxml.jackson.databind.JsonNode;
 
@@ -98,6 +100,11 @@ public class OutboxPublisher {
         UUID customerId = UUID.fromString(payload.path("customerId").asText());
         BigDecimal totalAmount = payload.path("totalAmount").decimalValue();
         String currency = payload.path("currency").asText();
+        List<OrderItemPayload> items = new ArrayList<>();
+        payload.path("items").forEach(item -> items.add(OrderItemPayload.newBuilder()
+                .setProductId(UUID.fromString(item.path("productId").asText()))
+                .setQuantity(item.path("quantity").asInt())
+                .build()));
 
         OrderCreated avroEvent = OrderCreated.newBuilder()
                 .setEventId(event.getId())
@@ -111,6 +118,7 @@ public class OutboxPublisher {
                         .setCustomerId(customerId)
                         .setTotalAmount(totalAmount)
                         .setCurrency(currency)
+                        .setItems(items)
                         .build())
                 .build();
 

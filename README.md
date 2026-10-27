@@ -13,14 +13,16 @@ The foundation currently includes:
 - Four independently runnable Spring Boot services
 - Order Service that stores orders and publishes `OrderCreated` from a transactional outbox
 - Payment Service that consumes `OrderCreated`, persists simulated outcomes, and publishes payment events
+- Inventory Service that consumes `OrderCreated`, reserves product quantities, and publishes inventory outcomes
 - Actuator health endpoints for every service
 - PostgreSQL 16
 - Three-node Kafka cluster in KRaft mode
 - Kafka Schema Registry
 - Avro `OrderCreated` envelope validated by Schema Registry with BACKWARD compatibility
 - Initial Kafka topics with six partitions and replication factor three
-- Transactional outbox publishers for order and payment events
+- Transactional outbox publishers for order, payment, and inventory events
 - Avro `PaymentCompleted` and `PaymentFailed` contracts with separate Schema Registry subjects
+- Avro `InventoryReserved` and `InventoryReservationFailed` contracts with separate Schema Registry subjects
 
 ## Repository Layout
 
@@ -51,8 +53,8 @@ Ensure these tools are available on `PATH`.
 ## Start Infrastructure
 
 The Compose file starts PostgreSQL, the Kafka brokers, Schema Registry, the
-order and payment services, and an initialization container that creates the
-Kafka topics.
+order, payment, and inventory services, and an initialization container that
+creates the Kafka topics.
 
 ```powershell
 docker compose up -d
@@ -113,12 +115,41 @@ listeners. When running it directly on the host, its default bootstrap servers
 are `localhost:19092,localhost:19093,localhost:19094`. Override them with
 `KAFKA_BOOTSTRAP_SERVERS` as needed.
 
-The outbox publisher polls every second by default, processes up to 100 events
+Each outbox publisher polls every second by default, processes up to 100 events
 per batch, and waits up to 10 seconds for each Kafka acknowledgement. These can
 be configured with `OUTBOX_PUBLISHER_POLL_INTERVAL_MS`,
 `OUTBOX_PUBLISHER_BATCH_SIZE`, and `OUTBOX_PUBLISHER_SEND_TIMEOUT_MS`. Publisher
-successes, failures, and duration are available through the order and payment
-services' `/actuator/metrics` endpoints.
+successes, failures, and duration are available through the order, payment, and
+inventory services' `/actuator/metrics` endpoints.
+
+## Order Items and Inventory Flow
+
+`POST /orders` requires a non-empty `items` array. Each item contains a product
+UUID and positive quantity. The Order Service persists the lines and the
+`OrderCreated` outbox event in the same transaction. `OrderCreated` version 2
+adds the items as an Avro field with an empty default so existing version 1
+messages remain readable. Product pricing is out of scope; `totalAmount` remains
+the caller-supplied order amount.
+
+The Inventory Service consumes these events in group `inventory-service`. It
+locks products in a stable order and reserves all lines atomically; if any
+product is missing or stock is insufficient, it reserves none. Repeated event
+IDs do not create another reservation. Success/failure events are written to
+the inventory outbox and published to `inventory` with `orderId` as the key.
+Consumer offsets are acknowledged after the database transaction commits;
+failures retry indefinitely in this phase and can block a partition. Retry and
+DLQ handling is planned for Phase 10.
+
+There is no catalog management API in this phase. Wait until the services are
+healthy, then add local demo stock directly to PostgreSQL:
+
+```powershell
+docker compose exec postgres psql -U eventforge -d eventforge -c "INSERT INTO inventory_service.products (id, sku, name, available_quantity, reserved_quantity) VALUES ('33333333-3333-4333-8333-333333333333', 'DEMO-ITEM', 'Demo item', 100, 0) ON CONFLICT (sku) DO NOTHING;"
+```
+
+Inventory currently reacts to `OrderCreated` independently of payment, so an
+order that later fails payment can still hold reserved stock. Reservation
+release is not implemented yet.
 
 ## Payment Flow
 
@@ -153,23 +184,28 @@ mvn verify
 docker compose config
 ```
 
-After starting the services, check the health endpoints with `curl.exe` or a
-browser. Create an order with a typical amount to produce a completed payment;
-use an amount above the configured threshold to produce a failed payment:
+After starting the services and adding demo stock, check the health endpoints
+with `curl.exe` or a browser. Create an order with a typical amount to produce a
+completed payment; use an amount above the configured threshold to produce a
+failed payment:
 
 ```powershell
 curl.exe -X POST http://localhost:8080/orders `
   -H "Content-Type: application/json" `
-  --data-raw '{ "customerId": "11111111-1111-4111-8111-111111111111", "totalAmount": 149.99, "currency": "USD" }'
+  --data-raw '{ "customerId": "11111111-1111-4111-8111-111111111111", "totalAmount": 149.99, "currency": "USD", "items": [{ "productId": "33333333-3333-4333-8333-333333333333", "quantity": 2 }] }'
 curl.exe -X POST http://localhost:8080/orders `
   -H "Content-Type: application/json" `
-  --data-raw '{ "customerId": "22222222-2222-4222-8222-222222222222", "totalAmount": 1500.00, "currency": "USD" }'
+  --data-raw '{ "customerId": "22222222-2222-4222-8222-222222222222", "totalAmount": 1500.00, "currency": "USD", "items": [{ "productId": "33333333-3333-4333-8333-333333333333", "quantity": 1 }] }'
 curl.exe http://localhost:8085/subjects
 curl.exe http://localhost:8085/subjects/orders-value/versions/latest
 curl.exe http://localhost:8085/subjects/payments-com.eventforge.contracts.payment.PaymentCompleted/versions/latest
 curl.exe http://localhost:8085/subjects/payments-com.eventforge.contracts.payment.PaymentFailed/versions/latest
+curl.exe http://localhost:8085/subjects/inventory-com.eventforge.contracts.inventory.InventoryReserved/versions/latest
+curl.exe http://localhost:8085/subjects/inventory-com.eventforge.contracts.inventory.InventoryReservationFailed/versions/latest
 
 docker compose exec postgres psql -U eventforge -d eventforge -c "SELECT order_id, amount, currency, status, provider_reference, failure_reason FROM payment_service.payments;"
+docker compose exec postgres psql -U eventforge -d eventforge -c "SELECT sku, available_quantity, reserved_quantity FROM inventory_service.products;"
+docker compose exec postgres psql -U eventforge -d eventforge -c "SELECT order_id, product_id, quantity, status FROM inventory_service.inventory_reservations;"
 ```
 
 ## Architectural Direction

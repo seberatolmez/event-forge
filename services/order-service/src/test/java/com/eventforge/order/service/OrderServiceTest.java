@@ -9,6 +9,7 @@ import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -22,6 +23,7 @@ import org.springframework.test.util.ReflectionTestUtils;
 
 import com.eventforge.order.domain.InvalidOrderException;
 import com.eventforge.order.domain.Order;
+import com.eventforge.order.domain.OrderItem;
 import com.eventforge.order.domain.OrderStatus;
 import com.eventforge.order.outbox.OutboxEvent;
 import com.eventforge.order.outbox.OutboxEventRepository;
@@ -57,7 +59,12 @@ class OrderServiceTest {
                     return savedOrder;
                 });
 
-        Order order = orderService.createOrder(CUSTOMER_ID, new BigDecimal("49.50"), "EUR");
+        UUID productId = UUID.randomUUID();
+        Order order = orderService.createOrder(
+                CUSTOMER_ID,
+                new BigDecimal("49.50"),
+                "EUR",
+                List.of(OrderItem.create(productId, 2)));
 
         assertThat(order.getStatus()).isEqualTo(OrderStatus.PENDING);
         assertThat(order.getId()).isEqualTo(ORDER_ID);
@@ -71,18 +78,25 @@ class OrderServiceTest {
         assertThat(event.getAggregateType()).isEqualTo("Order");
         assertThat(event.getAggregateId()).isEqualTo(ORDER_ID);
         assertThat(event.getEventType()).isEqualTo("OrderCreated");
-        assertThat(event.getEventVersion()).isEqualTo(1);
+        assertThat(event.getEventVersion()).isEqualTo(2);
 
         JsonNode payload = event.getPayload();
         assertThat(payload.path("orderId").asText()).isEqualTo(ORDER_ID.toString());
         assertThat(payload.path("customerId").asText()).isEqualTo(CUSTOMER_ID.toString());
         assertThat(payload.path("totalAmount").decimalValue()).isEqualByComparingTo("49.50");
         assertThat(payload.path("currency").asText()).isEqualTo("EUR");
+        assertThat(payload.path("items")).hasSize(1);
+        assertThat(payload.path("items").get(0).path("productId").asText()).isEqualTo(productId.toString());
+        assertThat(payload.path("items").get(0).path("quantity").asInt()).isEqualTo(2);
     }
 
     @Test
     void createOrderRejectsInvalidOrderWithoutTouchingRepository() {
-        assertThatThrownBy(() -> orderService.createOrder(CUSTOMER_ID, BigDecimal.ZERO, "USD"))
+        assertThatThrownBy(() -> orderService.createOrder(
+                CUSTOMER_ID,
+                BigDecimal.ZERO,
+                "USD",
+                List.of(OrderItem.create(UUID.randomUUID(), 1))))
                 .isInstanceOf(InvalidOrderException.class);
 
         verify(orderRepository, never()).save(any(Order.class));
@@ -91,9 +105,13 @@ class OrderServiceTest {
 
     @Test
     void getOrderReturnsExistingOrder() {
-        Order stored = Order.create(CUSTOMER_ID, new BigDecimal("10.00"), "USD");
+        Order stored = Order.create(
+                CUSTOMER_ID,
+                new BigDecimal("10.00"),
+                "USD",
+                List.of(OrderItem.create(UUID.randomUUID(), 1)));
         UUID storedId = UUID.randomUUID();
-        when(orderRepository.findById(storedId)).thenReturn(Optional.of(stored));
+        when(orderRepository.findWithItemsById(storedId)).thenReturn(Optional.of(stored));
 
         Order result = orderService.getOrder(storedId);
 
@@ -103,7 +121,7 @@ class OrderServiceTest {
     @Test
     void getOrderThrowsWhenOrderDoesNotExist() {
         UUID unknownId = UUID.randomUUID();
-        when(orderRepository.findById(unknownId)).thenReturn(Optional.empty());
+        when(orderRepository.findWithItemsById(unknownId)).thenReturn(Optional.empty());
 
         assertThatThrownBy(() -> orderService.getOrder(unknownId))
                 .isInstanceOf(OrderNotFoundException.class)
