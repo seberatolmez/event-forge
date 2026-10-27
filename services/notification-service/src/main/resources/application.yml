@@ -1,15 +1,52 @@
 spring:
   application:
     name: notification-service
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:19092,localhost:19093,localhost:19094}
+    consumer:
+      group-id: ${NOTIFICATION_CONSUMER_GROUP_ID:notification-service}
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+      properties:
+        "[schema.registry.url]": ${SCHEMA_REGISTRY_URL:http://localhost:8085}
+        "[specific.avro.reader]": true
+    listener:
+      ack-mode: manual_immediate
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5432}/${POSTGRES_DB:eventforge}
+    username: ${POSTGRES_USER:eventforge}
+    password: ${POSTGRES_PASSWORD:eventforge}
+  jpa:
+    open-in-view: false
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        default_schema: notification_service
+  flyway:
+    schemas: notification_service
+    default-schema: notification_service
 
 server:
   port: ${SERVER_PORT:8083}
+
+eventforge:
+  notification:
+    consumer:
+      enabled: ${NOTIFICATION_CONSUMER_ENABLED:true}
+      group-id: ${NOTIFICATION_CONSUMER_GROUP_ID:notification-service}
+      orders-topic: ${KAFKA_ORDERS_TOPIC:orders}
+      payments-topic: ${KAFKA_PAYMENTS_TOPIC:payments}
+      inventory-topic: ${KAFKA_INVENTORY_TOPIC:inventory}
+      retry-backoff-ms: ${NOTIFICATION_CONSUMER_RETRY_BACKOFF_MS:1000}
 
 management:
   endpoints:
     web:
       exposure:
-        include: health,info
+        include: health,info,metrics
   endpoint:
     health:
       probes:
