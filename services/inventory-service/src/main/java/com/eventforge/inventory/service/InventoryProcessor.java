@@ -41,13 +41,9 @@ public class InventoryProcessor {
     private final ObjectMapper objectMapper;
 
     @Transactional
-    public boolean processOrderCreated(OrderCreated orderCreated) {
+    public void processOrderCreated(OrderCreated orderCreated) {
         if (orderCreated == null || orderCreated.getEventId() == null || orderCreated.getPayload() == null) {
             throw new IllegalArgumentException("OrderCreated event metadata and payload are required");
-        }
-        if (processedEventRepository.existsById(orderCreated.getEventId())) {
-            log.info("Ignoring already processed OrderCreated event {}", orderCreated.getEventId());
-            return false;
         }
 
         OrderCreatedPayload payload = orderCreated.getPayload();
@@ -57,13 +53,21 @@ public class InventoryProcessor {
         }
 
         List<RequestedItem> items = requestedItems(payload.getItems());
+        if (items.isEmpty() && orderCreated.getEventVersion() != 1) {
+            throw new IllegalArgumentException("OrderCreated version 2 must contain at least one item");
+        }
+
+        // Dedup is the PK insert itself: a duplicate delivery (or concurrent twin) fails the
+        // insert, aborts the transaction and is handled as "already processed" by the listener.
+        // No DB state has been written at this point, so nothing is left half-done.
+        processedEventRepository.saveAndFlush(ProcessedEvent.create(
+                orderCreated.getEventId(),
+                orderCreated.getEventType().toString(),
+                orderCreated.getEventVersion()));
+
         if (items.isEmpty()) {
-            if (orderCreated.getEventVersion() != 1) {
-                throw new IllegalArgumentException("OrderCreated version 2 must contain at least one item");
-            }
             log.info("Ignoring legacy OrderCreated event {} with no item data", orderCreated.getEventId());
-            markProcessed(orderCreated);
-            return true;
+            return;
         }
 
         List<UUID> productIds = items.stream().map(RequestedItem::productId).sorted().toList();
@@ -103,9 +107,6 @@ public class InventoryProcessor {
                                 reservation.getId(), orderId, item.productId(), item.quantity()))));
             }
         }
-
-        markProcessed(orderCreated);
-        return true;
     }
 
     private List<RequestedItem> requestedItems(List<OrderItemPayload> payloadItems) {
@@ -124,13 +125,6 @@ public class InventoryProcessor {
             items.add(new RequestedItem(item.getProductId(), item.getQuantity()));
         }
         return List.copyOf(items);
-    }
-
-    private void markProcessed(OrderCreated orderCreated) {
-        processedEventRepository.save(ProcessedEvent.create(
-                orderCreated.getEventId(),
-                orderCreated.getEventType().toString(),
-                orderCreated.getEventVersion()));
     }
 
     private record RequestedItem(UUID productId, int quantity) {

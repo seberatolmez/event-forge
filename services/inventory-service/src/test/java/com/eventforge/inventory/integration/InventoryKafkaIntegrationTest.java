@@ -191,8 +191,8 @@ class InventoryKafkaIntegrationTest {
             assertThat(ready.await(5, TimeUnit.SECONDS)).isTrue();
             start.countDown();
 
-            assertThat(first.get(10, TimeUnit.SECONDS)).isTrue();
-            assertThat(second.get(10, TimeUnit.SECONDS)).isTrue();
+            assertThat(first.get(10, TimeUnit.SECONDS)).isNotNull();
+            assertThat(second.get(10, TimeUnit.SECONDS)).isNotNull();
         }
 
         Product updated = productRepository.findById(product.getId()).orElseThrow();
@@ -220,7 +220,7 @@ class InventoryKafkaIntegrationTest {
         assertThat(reservationRepository.findAllByOrderId(order.getAggregateId())).isEmpty();
         assertThat(processedEventRepository.existsById(order.getEventId())).isFalse();
 
-        assertThat(inventoryProcessor.processOrderCreated(order)).isTrue();
+        inventoryProcessor.processOrderCreated(order);
         Product retried = productRepository.findById(product.getId()).orElseThrow();
         assertThat(retried.getAvailableQuantity()).isEqualTo(3);
         assertThat(reservationRepository.findAllByOrderId(order.getAggregateId())).hasSize(1);
@@ -252,7 +252,31 @@ class InventoryKafkaIntegrationTest {
         if (!start.await(5, TimeUnit.SECONDS)) {
             throw new IllegalStateException("concurrent reservation test did not start");
         }
-        return inventoryProcessor.processOrderCreated(event);
+        inventoryProcessor.processOrderCreated(event);
+        return true;
+    }
+
+    @Test
+    void invalidOrderCreatedIsSkippedWithoutBlockingSubsequentEvents() throws Exception {
+        Product product = productRepository.saveAndFlush(Product.create("SKU-" + UUID.randomUUID(), "After poison", 5));
+        UUID poisonEventId = UUID.randomUUID();
+        UUID validOrderId = UUID.randomUUID();
+        OrderCreated valid = orderCreated(validOrderId, UUID.randomUUID(), product.getId(), 1);
+        OrderCreated poison = OrderCreated.newBuilder(valid)
+                .setEventId(poisonEventId)
+                .setEventVersion(9)
+                .build();
+
+        // Single partition: the poison message sits ahead of the valid one, so this only passes if the
+        // consumer moves past the rejected event instead of retrying it forever.
+        sendOrderCreated(poison);
+        sendOrderCreated(valid);
+
+        await().atMost(Duration.ofSeconds(20)).untilAsserted(() -> {
+            assertThat(reservationRepository.findAllByOrderId(validOrderId)).hasSize(1);
+            assertThat(processedEventRepository.existsById(valid.getEventId())).isTrue();
+        });
+        assertThat(processedEventRepository.existsById(poisonEventId)).isFalse();
     }
 
     private void sendOrderCreated(OrderCreated orderCreated) throws Exception {

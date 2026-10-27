@@ -19,6 +19,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.test.util.ReflectionTestUtils;
 
 import com.eventforge.contracts.order.OrderCreated;
@@ -68,7 +69,6 @@ class InventoryProcessorTest {
     void reservesEveryItemAndStoresMatchingOutboxEvents() {
         UUID productId = UUID.randomUUID();
         Product product = product(productId, 5);
-        when(processedEventRepository.existsById(EVENT_ID)).thenReturn(false);
         when(productRepository.findAllForUpdate(List.of(productId))).thenReturn(List.of(product));
         when(reservationRepository.save(any(InventoryReservation.class))).thenAnswer(invocation -> {
             InventoryReservation saved = invocation.getArgument(0);
@@ -76,9 +76,8 @@ class InventoryProcessorTest {
             return saved;
         });
 
-        boolean processed = processor.processOrderCreated(event(2, item(productId, 2)));
+        processor.processOrderCreated(event(2, item(productId, 2)));
 
-        assertThat(processed).isTrue();
         assertThat(product.getAvailableQuantity()).isEqualTo(3);
         assertThat(product.getReservedQuantity()).isEqualTo(2);
         verify(reservationRepository).save(any(InventoryReservation.class));
@@ -86,14 +85,13 @@ class InventoryProcessorTest {
         verify(outboxEventRepository).save(eventCaptor.capture());
         assertThat(eventCaptor.getValue().getEventType()).isEqualTo("InventoryReserved");
         assertThat(eventCaptor.getValue().getPayload().path("orderId").asText()).isEqualTo(ORDER_ID.toString());
-        verify(processedEventRepository).save(any(ProcessedEvent.class));
+        verify(processedEventRepository).saveAndFlush(any(ProcessedEvent.class));
     }
 
     @Test
     void insufficientStockEmitsFailureWithoutReservingAnyItems() {
         UUID productId = UUID.randomUUID();
         Product product = product(productId, 1);
-        when(processedEventRepository.existsById(EVENT_ID)).thenReturn(false);
         when(productRepository.findAllForUpdate(List.of(productId))).thenReturn(List.of(product));
 
         processor.processOrderCreated(event(2, item(productId, 2)));
@@ -113,7 +111,6 @@ class InventoryProcessorTest {
         UUID unavailableId = UUID.randomUUID();
         Product available = product(availableId, 5);
         Product unavailable = product(unavailableId, 1);
-        when(processedEventRepository.existsById(EVENT_ID)).thenReturn(false);
         when(productRepository.findAllForUpdate(anyList())).thenReturn(List.of(available, unavailable));
 
         processor.processOrderCreated(event(2, item(availableId, 2), item(unavailableId, 2)));
@@ -129,33 +126,30 @@ class InventoryProcessorTest {
     }
 
     @Test
-    void duplicateEventDoesNotLoadProductsOrCreateSideEffects() {
-        when(processedEventRepository.existsById(EVENT_ID)).thenReturn(true);
+    void duplicateClaimFailsBeforeProductsAreLoadedOrSideEffectsOccur() {
+        when(processedEventRepository.saveAndFlush(any(ProcessedEvent.class)))
+                .thenThrow(new DuplicateKeyException("processed_events_pkey"));
 
-        assertThat(processor.processOrderCreated(event(2, item(UUID.randomUUID(), 1)))).isFalse();
+        assertThatThrownBy(() -> processor.processOrderCreated(event(2, item(UUID.randomUUID(), 1))))
+                .isInstanceOf(DuplicateKeyException.class);
 
         verifyNoInteractions(productRepository, reservationRepository, outboxEventRepository);
-        verify(processedEventRepository, never()).save(any(ProcessedEvent.class));
     }
 
     @Test
     void legacyEventWithoutItemsIsRecordedWithoutInventoryChanges() {
-        when(processedEventRepository.existsById(EVENT_ID)).thenReturn(false);
-
-        assertThat(processor.processOrderCreated(event(1))).isTrue();
+        processor.processOrderCreated(event(1));
 
         verifyNoInteractions(productRepository, reservationRepository, outboxEventRepository);
-        verify(processedEventRepository).save(any(ProcessedEvent.class));
+        verify(processedEventRepository).saveAndFlush(any(ProcessedEvent.class));
     }
 
     @Test
-    void versionTwoEventWithoutItemsIsRejected() {
-        when(processedEventRepository.existsById(EVENT_ID)).thenReturn(false);
-
+    void versionTwoEventWithoutItemsIsRejectedBeforeClaiming() {
         assertThatThrownBy(() -> processor.processOrderCreated(event(2)))
                 .isInstanceOf(IllegalArgumentException.class)
                 .hasMessageContaining("at least one item");
-        verifyNoInteractions(productRepository, reservationRepository, outboxEventRepository);
+        verifyNoInteractions(productRepository, reservationRepository, outboxEventRepository, processedEventRepository);
     }
 
     private static Product product(UUID id, int available) {
