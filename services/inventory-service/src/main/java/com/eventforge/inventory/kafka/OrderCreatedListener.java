@@ -21,14 +21,27 @@ public class OrderCreatedListener {
 
     private final InventoryProcessor inventoryProcessor;
 
-    /**
-     * The ack must not move past an uncommitted offset: {@link InventoryProcessor#processOrderCreated} runs its DB
-     * transaction to completion before returning, so {@code acknowledge()} only ever fires after a durable commit.
-     */
     @KafkaListener(
             topics = "${eventforge.inventory.consumer.orders-topic}",
             groupId = "${eventforge.inventory.consumer.group-id}")
     public void consume(ConsumerRecord<String, Object> record, Acknowledgment acknowledgment) {
+        handle(record, acknowledgment);
+    }
+
+    @KafkaListener(
+            topics = "${eventforge.inventory.consumer.retry-topic}",
+            groupId = "${eventforge.inventory.consumer.group-id}-retry",
+            containerFactory = "inventoryRetryListenerContainerFactory")
+    public void consumeRetry(ConsumerRecord<String, Object> record, Acknowledgment acknowledgment) {
+        handle(record, acknowledgment);
+    }
+
+    /**
+     * The ack must not move past an uncommitted offset: {@link InventoryProcessor#processOrderCreated} runs its DB
+     * transaction to completion before returning, so {@code acknowledge()} only ever fires after a durable commit.
+     * Invalid events throw {@link IllegalArgumentException}, which the error handler dead-letters.
+     */
+    private void handle(ConsumerRecord<String, Object> record, Acknowledgment acknowledgment) {
         Object event = record.value();
         if (!(event instanceof OrderCreated orderCreated)) {
             log.debug(
@@ -42,9 +55,6 @@ public class OrderCreatedListener {
             process(orderCreated);
         } catch (DuplicateKeyException e) {
             log.info("OrderCreated event {} already processed, skipping", orderCreated.getEventId());
-        } catch (IllegalArgumentException e) {
-            // Retrying a deterministically invalid event can never succeed and would block its partition forever.
-            log.error("Discarding invalid OrderCreated event {}: {}", orderCreated.getEventId(), e.getMessage());
         }
 
         acknowledgment.acknowledge();

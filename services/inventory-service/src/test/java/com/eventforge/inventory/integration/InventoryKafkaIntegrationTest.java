@@ -7,10 +7,12 @@ import static org.awaitility.Awaitility.await;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
@@ -22,8 +24,13 @@ import org.apache.avro.specific.SpecificRecord;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -35,6 +42,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.KafkaAdmin.NewTopics;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
@@ -74,6 +82,8 @@ import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
 class InventoryKafkaIntegrationTest {
 
     private static final String INVENTORY_TOPIC = "inventory";
+    private static final String RETRY_TOPIC = "inventory.retry";
+    private static final String DLQ_TOPIC = "inventory.dlq";
     private static final Network KAFKA_NETWORK = Network.newNetwork();
 
     @Container
@@ -206,7 +216,7 @@ class InventoryKafkaIntegrationTest {
     void outboxFailureRollsBackReservationAndAllowsTheEventToRetry() {
         Product product = productRepository.saveAndFlush(Product.create("SKU-" + UUID.randomUUID(), "Retry item", 5));
         OrderCreated order = orderCreated(UUID.randomUUID(), UUID.randomUUID(), product.getId(), 2);
-        installOutboxFailureTrigger();
+        installOutboxFailureTrigger(1_000_000);
         try {
             assertThatThrownBy(() -> inventoryProcessor.processOrderCreated(order))
                     .isInstanceOf(RuntimeException.class);
@@ -226,14 +236,18 @@ class InventoryKafkaIntegrationTest {
         assertThat(reservationRepository.findAllByOrderId(order.getAggregateId())).hasSize(1);
     }
 
-    private void installOutboxFailureTrigger() {
+    private void installOutboxFailureTrigger(long failedInserts) {
+        jdbcTemplate.execute("CREATE SEQUENCE inventory_service.inventory_outbox_reject_attempts");
         jdbcTemplate.execute("""
                 CREATE FUNCTION inventory_service.reject_inventory_outbox_insert() RETURNS trigger AS $$
                 BEGIN
-                    RAISE EXCEPTION 'forced inventory outbox failure';
+                    IF nextval('inventory_service.inventory_outbox_reject_attempts') <= %d THEN
+                        RAISE EXCEPTION 'forced inventory outbox failure';
+                    END IF;
+                    RETURN NEW;
                 END;
                 $$ LANGUAGE plpgsql
-                """);
+                """.formatted(failedInserts));
         jdbcTemplate.execute("""
                 CREATE TRIGGER reject_inventory_outbox_insert
                 BEFORE INSERT ON inventory_service.outbox_events
@@ -245,6 +259,7 @@ class InventoryKafkaIntegrationTest {
         jdbcTemplate.execute(
                 "DROP TRIGGER IF EXISTS reject_inventory_outbox_insert ON inventory_service.outbox_events");
         jdbcTemplate.execute("DROP FUNCTION IF EXISTS inventory_service.reject_inventory_outbox_insert()");
+        jdbcTemplate.execute("DROP SEQUENCE IF EXISTS inventory_service.inventory_outbox_reject_attempts");
     }
 
     private boolean processTogether(OrderCreated event, CountDownLatch ready, CountDownLatch start) throws Exception {
@@ -277,6 +292,108 @@ class InventoryKafkaIntegrationTest {
             assertThat(processedEventRepository.existsById(valid.getEventId())).isTrue();
         });
         assertThat(processedEventRepository.existsById(poisonEventId)).isFalse();
+
+        ConsumerRecord<String, byte[]> dead = awaitRaw(DLQ_TOPIC, validOrderId).orElseThrow();
+        assertThat(headerValue(dead, "eventId")).isEqualTo(poisonEventId.toString());
+        assertThat(headerValue(dead, "consumer")).isEqualTo("inventory-service");
+        assertThat(headerValue(dead, KafkaHeaders.DLT_ORIGINAL_TOPIC)).isEqualTo("orders");
+        assertThat(headerValue(dead, KafkaHeaders.DLT_EXCEPTION_CAUSE_FQCN))
+                .isEqualTo(IllegalArgumentException.class.getName());
+        assertThat(dead.headers().lastHeader("retryCount")).isNull();
+        assertThat(awaitRaw(RETRY_TOPIC, validOrderId, Duration.ofSeconds(1))).isEmpty();
+    }
+
+    @Test
+    void transientDatabaseFailureIsRetriedThroughRetryTopicAndReservedExactlyOnce() throws Exception {
+        Product product = productRepository.saveAndFlush(Product.create("SKU-" + UUID.randomUUID(), "Transient", 5));
+        UUID orderId = UUID.randomUUID();
+        OrderCreated order = orderCreated(orderId, UUID.randomUUID(), product.getId(), 2);
+        // 3 in-place attempts on the orders listener fail, the 4th (first retry-topic attempt) fails too, the 5th succeeds
+        installOutboxFailureTrigger(4);
+        try {
+            sendOrderCreated(order);
+
+            await().atMost(Duration.ofSeconds(20)).untilAsserted(() ->
+                    assertThat(reservationRepository.findAllByOrderId(orderId)).hasSize(1));
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT last_value FROM inventory_service.inventory_outbox_reject_attempts", Long.class))
+                    .isEqualTo(5L);
+        } finally {
+            removeOutboxFailureTrigger();
+        }
+        assertThat(productRepository.findById(product.getId()).orElseThrow().getAvailableQuantity()).isEqualTo(3);
+
+        ConsumerRecord<String, byte[]> retried = awaitRaw(RETRY_TOPIC, orderId).orElseThrow();
+        assertThat(headerValue(retried, "retryCount")).isEqualTo("1");
+        assertThat(headerValue(retried, "eventId")).isEqualTo(order.getEventId().toString());
+        assertThat(awaitRaw(DLQ_TOPIC, orderId, Duration.ofSeconds(2))).isEmpty();
+    }
+
+    @Test
+    void exhaustedRetriesEndInDlqWithDiagnosticMetadata() throws Exception {
+        Product product = productRepository.saveAndFlush(Product.create("SKU-" + UUID.randomUUID(), "Exhausted", 5));
+        UUID orderId = UUID.randomUUID();
+        OrderCreated order = orderCreated(orderId, UUID.randomUUID(), product.getId(), 2);
+        installOutboxFailureTrigger(1_000_000);
+        try {
+            sendOrderCreated(order);
+
+            ConsumerRecord<String, byte[]> dead = awaitRaw(DLQ_TOPIC, orderId).orElseThrow();
+            assertThat(headerValue(dead, "retryCount")).isEqualTo("1");
+            assertThat(headerValue(dead, "eventId")).isEqualTo(order.getEventId().toString());
+            assertThat(headerValue(dead, "consumer")).isEqualTo("inventory-service");
+            assertThat(headerValue(dead, KafkaHeaders.DLT_ORIGINAL_TOPIC)).isEqualTo(RETRY_TOPIC);
+            assertThat(dead.headers().lastHeader(KafkaHeaders.DLT_EXCEPTION_FQCN)).isNotNull();
+            assertThat(dead.headers().lastHeader(KafkaHeaders.DLT_EXCEPTION_MESSAGE)).isNotNull();
+            assertThat(reservationRepository.findAllByOrderId(orderId)).isEmpty();
+        } finally {
+            removeOutboxFailureTrigger();
+        }
+    }
+
+    @Test
+    void undeserializableRecordIsDeadLetteredWithItsOriginalBytes() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        byte[] garbage = "not-avro".getBytes(StandardCharsets.UTF_8);
+
+        try (KafkaProducer<String, byte[]> producer = new KafkaProducer<>(
+                Map.<String, Object>of(
+                        ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers()),
+                new StringSerializer(), new ByteArraySerializer())) {
+            producer.send(new ProducerRecord<>("orders", orderId.toString(), garbage)).get(10, TimeUnit.SECONDS);
+        }
+
+        ConsumerRecord<String, byte[]> dead = awaitRaw(DLQ_TOPIC, orderId).orElseThrow();
+        assertThat(dead.value()).isEqualTo(garbage);
+        assertThat(headerValue(dead, KafkaHeaders.DLT_ORIGINAL_TOPIC)).isEqualTo("orders");
+    }
+
+    private Optional<ConsumerRecord<String, byte[]>> awaitRaw(String topic, UUID key) {
+        return awaitRaw(topic, key, Duration.ofSeconds(20));
+    }
+
+    private Optional<ConsumerRecord<String, byte[]>> awaitRaw(String topic, UUID key, Duration timeout) {
+        Properties properties = new Properties();
+        properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+        properties.put(ConsumerConfig.GROUP_ID_CONFIG, "inventory-raw-test-" + UUID.randomUUID());
+        properties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        try (KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(
+                properties, new StringDeserializer(), new ByteArrayDeserializer())) {
+            consumer.subscribe(List.of(topic));
+            long deadline = System.nanoTime() + timeout.toNanos();
+            while (System.nanoTime() < deadline) {
+                for (ConsumerRecord<String, byte[]> record : consumer.poll(Duration.ofMillis(250))) {
+                    if (key.toString().equals(record.key())) {
+                        return Optional.of(record);
+                    }
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    private static String headerValue(ConsumerRecord<String, ?> record, String name) {
+        return new String(record.headers().lastHeader(name).value(), StandardCharsets.UTF_8);
     }
 
     private void sendOrderCreated(OrderCreated orderCreated) throws Exception {
@@ -355,7 +472,9 @@ class InventoryKafkaIntegrationTest {
         NewTopics eventTopics() {
             return new NewTopics(
                     TopicBuilder.name("orders").partitions(1).replicas(1).build(),
-                    TopicBuilder.name(INVENTORY_TOPIC).partitions(1).replicas(1).build());
+                    TopicBuilder.name(INVENTORY_TOPIC).partitions(1).replicas(1).build(),
+                    TopicBuilder.name(RETRY_TOPIC).partitions(1).replicas(1).build(),
+                    TopicBuilder.name(DLQ_TOPIC).partitions(1).replicas(1).build());
         }
     }
 }

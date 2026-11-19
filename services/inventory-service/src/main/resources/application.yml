@@ -15,8 +15,9 @@ spring:
       enable-auto-commit: false
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
+        "[spring.deserializer.value.delegate.class]": io.confluent.kafka.serializers.KafkaAvroDeserializer
         "[schema.registry.url]": ${SCHEMA_REGISTRY_URL:http://localhost:8085}
         "[specific.avro.reader]": true
     listener:
@@ -55,7 +56,10 @@ eventforge:
       enabled: ${INVENTORY_CONSUMER_ENABLED:true}
       orders-topic: ${KAFKA_ORDERS_TOPIC:orders}
       group-id: ${INVENTORY_CONSUMER_GROUP_ID:inventory-service}
+      retry-topic: ${KAFKA_INVENTORY_RETRY_TOPIC:inventory.retry}
+      dlq-topic: ${KAFKA_INVENTORY_DLQ_TOPIC:inventory.dlq}
       retry-backoff-ms: ${INVENTORY_CONSUMER_RETRY_BACKOFF_MS:1000}
+      retry-max-attempts: ${INVENTORY_CONSUMER_RETRY_MAX_ATTEMPTS:3}
   outbox:
     publisher:
       enabled: ${OUTBOX_PUBLISHER_ENABLED:true}
