@@ -9,11 +9,13 @@ import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
-import org.apache.avro.specific.SpecificRecord;
+import org.apache.avro.Schema;
+import org.apache.avro.generic.GenericData;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.context.TestConfiguration;
+import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Import;
 import org.springframework.kafka.config.TopicBuilder;
@@ -52,6 +54,7 @@ class NotificationKafkaIntegrationTest {
     private static final Network KAFKA_NETWORK = Network.newNetwork();
 
     @Container
+    @ServiceConnection
     static final PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
     @Container
@@ -91,7 +94,7 @@ class NotificationKafkaIntegrationTest {
     NotificationRepository notificationRepository;
 
     @Autowired
-    KafkaTemplate<String, SpecificRecord> kafkaTemplate;
+    KafkaTemplate<String, Object> kafkaTemplate;
 
     @Test
     void businessEventsCreateSentNotificationsIdempotently() {
@@ -99,6 +102,8 @@ class NotificationKafkaIntegrationTest {
         UUID customerId = UUID.randomUUID();
         OrderCreated orderCreated = orderCreated(orderId, customerId);
 
+        // not generated in this service: must be skipped without killing the consumer
+        send("inventory", orderId.toString(), unknownInventoryReserved());
         send("orders", orderId.toString(), orderCreated);
         send("orders", orderId.toString(), orderCreated);
         send("payments", orderId.toString(), paymentCompleted(orderId));
@@ -120,8 +125,17 @@ class NotificationKafkaIntegrationTest {
         });
     }
 
-    private void send(String topic, String key, SpecificRecord event) {
+    private void send(String topic, String key, Object event) {
         kafkaTemplate.send(topic, key, event);
+    }
+
+    private static GenericData.Record unknownInventoryReserved() {
+        Schema schema = new Schema.Parser().parse("""
+                {"type":"record","name":"InventoryReserved","namespace":"com.eventforge.contracts.inventory",
+                 "fields":[{"name":"eventType","type":"string"}]}""");
+        GenericData.Record record = new GenericData.Record(schema);
+        record.put("eventType", "InventoryReserved");
+        return record;
     }
 
     private static OrderCreated orderCreated(UUID orderId, UUID customerId) {
