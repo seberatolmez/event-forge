@@ -24,6 +24,18 @@ public class OrderCreatedListener {
             topics = "${eventforge.payment.consumer.orders-topic}",
             groupId = "${eventforge.payment.consumer.group-id}")
     public void consume(ConsumerRecord<String, Object> record, Acknowledgment acknowledgment) {
+        handle(record, acknowledgment);
+    }
+
+    @KafkaListener(
+            topics = "${eventforge.payment.consumer.retry-topic}",
+            groupId = "${eventforge.payment.consumer.group-id}-retry",
+            containerFactory = "paymentRetryListenerContainerFactory")
+    public void consumeRetry(ConsumerRecord<String, Object> record, Acknowledgment acknowledgment) {
+        handle(record, acknowledgment);
+    }
+
+    private void handle(ConsumerRecord<String, Object> record, Acknowledgment acknowledgment) {
         Object event = record.value();
         if (!(event instanceof OrderCreated orderCreated)) {
             log.debug(

@@ -15,8 +15,9 @@ spring:
       enable-auto-commit: false
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: io.confluent.kafka.serializers.KafkaAvroDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.ErrorHandlingDeserializer
       properties:
+        "[spring.deserializer.value.delegate.class]": io.confluent.kafka.serializers.KafkaAvroDeserializer
         "[schema.registry.url]": ${SCHEMA_REGISTRY_URL:http://localhost:8085}
         "[specific.avro.reader]": true
     listener:
@@ -45,7 +46,10 @@ eventforge:
       enabled: ${PAYMENT_CONSUMER_ENABLED:true}
       orders-topic: ${KAFKA_ORDERS_TOPIC:orders}
       group-id: ${PAYMENT_CONSUMER_GROUP_ID:payment-service}
+      retry-topic: ${KAFKA_PAYMENTS_RETRY_TOPIC:payments.retry}
+      dlq-topic: ${KAFKA_PAYMENTS_DLQ_TOPIC:payments.dlq}
       retry-backoff-ms: ${PAYMENT_CONSUMER_RETRY_BACKOFF_MS:1000}
+      retry-max-attempts: ${PAYMENT_CONSUMER_RETRY_MAX_ATTEMPTS:3}
     simulator:
       decline-above: ${PAYMENT_SIMULATOR_DECLINE_ABOVE:1000.00}
   outbox:

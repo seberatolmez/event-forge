@@ -12,6 +12,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
@@ -23,9 +24,14 @@ import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.serialization.ByteArrayDeserializer;
+import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.serialization.StringSerializer;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -37,6 +43,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.kafka.config.TopicBuilder;
 import org.springframework.kafka.core.KafkaAdmin.NewTopics;
 import org.springframework.kafka.core.KafkaTemplate;
+import org.springframework.kafka.support.KafkaHeaders;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.GenericContainer;
@@ -76,6 +83,8 @@ import io.confluent.kafka.schemaregistry.client.SchemaRegistryClient;
 class PaymentOutboxPublisherIntegrationTest {
 
     private static final String PAYMENTS_TOPIC = "payments";
+    private static final String RETRY_TOPIC = "payments.retry";
+    private static final String DLQ_TOPIC = "payments.dlq";
     private static final String PAYMENT_CONSUMER_GROUP = "payment-service";
     private static final Network KAFKA_NETWORK = Network.newNetwork();
 
@@ -241,46 +250,120 @@ class PaymentOutboxPublisherIntegrationTest {
     }
 
     @Test
-    void databaseFailureRollsBackPaymentAndOutboxThenRetriesWithoutCommittingTheOrderEvent() throws Exception {
+    void transientDatabaseFailureIsRetriedThroughRetryTopicAndProcessedExactlyOnce() throws Exception {
         UUID orderId = UUID.randomUUID();
+        OrderCreated order = orderCreated(orderId, "149.99", 2);
         long inputOffset;
-        installOutboxInsertFailure();
+        // 3 in-place attempts on the orders listener fail, the 4th (first retry-topic attempt) fails too, the 5th succeeds
+        installOutboxInsertFailure(4);
         try {
-            inputOffset = sendOrderCreated(orderCreated(orderId, "149.99", 2));
+            inputOffset = sendOrderCreated(order);
 
-            await().atMost(Duration.ofSeconds(5)).untilAsserted(() -> {
-                Boolean triggerWasCalled = jdbcTemplate.queryForObject(
-                        "SELECT is_called FROM payment_service.payment_outbox_reject_attempts", Boolean.class);
-                Long outboxRowsForOrder = jdbcTemplate.queryForObject(
-                        "SELECT count(*) FROM payment_service.outbox_events WHERE payload->>'orderId' = ?",
-                        Long.class,
-                        orderId.toString());
-                assertThat(triggerWasCalled).isTrue();
-                assertThat(paymentRepository.findByOrderId(orderId)).isEmpty();
-                assertThat(outboxRowsForOrder).isZero();
+            await().atMost(Duration.ofSeconds(20)).ignoreExceptions().untilAsserted(() -> {
+                Payment payment = paymentRepository.findByOrderId(orderId).orElseThrow();
+                assertThat(payment.getStatus()).isEqualTo(PaymentStatus.COMPLETED);
+                assertThat(outboxEventRepository.findAllByAggregateId(payment.getId())).hasSize(1);
             });
-
-            assertPaymentConsumerHasNotCommitted(inputOffset);
+            assertThat(jdbcTemplate.queryForObject(
+                    "SELECT last_value FROM payment_service.payment_outbox_reject_attempts", Long.class))
+                    .isEqualTo(5L);
         } finally {
             removeOutboxInsertFailure();
         }
-
-        await().atMost(Duration.ofSeconds(15)).untilAsserted(() -> {
-            Payment payment = paymentRepository.findByOrderId(orderId).orElseThrow();
-            assertThat(payment.getStatus()).isEqualTo(PaymentStatus.COMPLETED);
-            assertThat(outboxEventRepository.findAllByAggregateId(payment.getId()))
-                    .singleElement()
-                    .satisfies(event -> assertThat(event.getPublishedAt()).isNotNull());
-        });
         awaitPaymentConsumerCommitted(inputOffset);
 
-        List<ConsumerRecord<String, SpecificRecord>> records = consumePaymentEvents(Set.of(orderId));
-        assertThat(records).singleElement().satisfies(record -> {
-            assertThat(record.value()).isInstanceOf(PaymentCompleted.class);
-            assertThat(record.key()).isEqualTo(orderId.toString());
-        });
+        ConsumerRecord<String, byte[]> retried = awaitRaw(RETRY_TOPIC, orderId).orElseThrow();
+        assertThat(headerValue(retried, "retryCount")).isEqualTo("1");
+        assertThat(headerValue(retried, "eventId")).isEqualTo(order.getEventId().toString());
+        assertThat(awaitRaw(DLQ_TOPIC, orderId, Duration.ofSeconds(2))).isEmpty();
     }
 
+    @Test
+    void exhaustedRetriesEndInDlqWithDiagnosticMetadata() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        OrderCreated order = orderCreated(orderId, "149.99", 2);
+        installOutboxInsertFailure(1_000_000);
+        try {
+            sendOrderCreated(order);
+
+            ConsumerRecord<String, byte[]> dead = awaitRaw(DLQ_TOPIC, orderId).orElseThrow();
+            assertThat(headerValue(dead, "retryCount")).isEqualTo("1");
+            assertThat(headerValue(dead, "eventId")).isEqualTo(order.getEventId().toString());
+            assertThat(headerValue(dead, "consumer")).isEqualTo("payment-service");
+            assertThat(headerValue(dead, KafkaHeaders.DLT_ORIGINAL_TOPIC)).isEqualTo(RETRY_TOPIC);
+            assertThat(dead.headers().headers(KafkaHeaders.DLT_ORIGINAL_TOPIC))
+                    .extracting(h -> new String(h.value(), StandardCharsets.UTF_8))
+                    .containsExactly("orders", RETRY_TOPIC);
+            assertThat(dead.headers().lastHeader(KafkaHeaders.DLT_EXCEPTION_FQCN)).isNotNull();
+            assertThat(dead.headers().lastHeader(KafkaHeaders.DLT_EXCEPTION_MESSAGE)).isNotNull();
+            assertThat(paymentRepository.findByOrderId(orderId)).isEmpty();
+        } finally {
+            removeOutboxInsertFailure();
+        }
+    }
+
+    @Test
+    void permanentFailureGoesStraightToDlqAndDoesNotBlockThePartition() throws Exception {
+        UUID badOrderId = UUID.randomUUID();
+        UUID goodOrderId = UUID.randomUUID();
+        OrderCreated bad = orderCreated(badOrderId, "149.99", 99);
+
+        sendOrderCreated(bad);
+        sendOrderCreated(orderCreated(goodOrderId, "149.99", 2));
+
+        ConsumerRecord<String, byte[]> dead = awaitRaw(DLQ_TOPIC, badOrderId).orElseThrow();
+        assertThat(headerValue(dead, "eventId")).isEqualTo(bad.getEventId().toString());
+        assertThat(headerValue(dead, "consumer")).isEqualTo("payment-service");
+        assertThat(headerValue(dead, KafkaHeaders.DLT_ORIGINAL_TOPIC)).isEqualTo("orders");
+        assertThat(headerValue(dead, KafkaHeaders.DLT_EXCEPTION_CAUSE_FQCN))
+                .isEqualTo(IllegalArgumentException.class.getName());
+        assertThat(dead.headers().lastHeader("retryCount")).isNull();
+        assertThat(awaitRaw(RETRY_TOPIC, badOrderId, Duration.ofSeconds(1))).isEmpty();
+        await().atMost(Duration.ofSeconds(15)).untilAsserted(() ->
+                assertThat(paymentRepository.findByOrderId(goodOrderId)).isPresent());
+        assertThat(paymentRepository.findByOrderId(badOrderId)).isEmpty();
+    }
+
+    @Test
+    void undeserializableRecordIsDeadLetteredWithItsOriginalBytes() throws Exception {
+        UUID orderId = UUID.randomUUID();
+        byte[] garbage = "not-avro".getBytes(StandardCharsets.UTF_8);
+
+        try (KafkaProducer<String, byte[]> producer = new KafkaProducer<>(
+                Map.<String, Object>of(
+                        ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers()),
+                new StringSerializer(), new ByteArraySerializer())) {
+            producer.send(new ProducerRecord<>("orders", orderId.toString(), garbage)).get(10, TimeUnit.SECONDS);
+        }
+
+        ConsumerRecord<String, byte[]> dead = awaitRaw(DLQ_TOPIC, orderId).orElseThrow();
+        assertThat(dead.value()).isEqualTo(garbage);
+        assertThat(headerValue(dead, KafkaHeaders.DLT_ORIGINAL_TOPIC)).isEqualTo("orders");
+    }
+
+    private Optional<ConsumerRecord<String, byte[]>> awaitRaw(String topic, UUID key) {
+        return awaitRaw(topic, key, Duration.ofSeconds(20));
+    }
+
+    private Optional<ConsumerRecord<String, byte[]>> awaitRaw(String topic, UUID key, Duration timeout) {
+        Properties properties = new Properties();
+        properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
+        properties.put(ConsumerConfig.GROUP_ID_CONFIG, "payment-raw-test-" + UUID.randomUUID());
+        properties.put(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest");
+        try (KafkaConsumer<String, byte[]> consumer = new KafkaConsumer<>(
+                properties, new StringDeserializer(), new ByteArrayDeserializer())) {
+            consumer.subscribe(List.of(topic));
+            long deadline = System.nanoTime() + timeout.toNanos();
+            while (System.nanoTime() < deadline) {
+                for (ConsumerRecord<String, byte[]> record : consumer.poll(Duration.ofMillis(250))) {
+                    if (key.toString().equals(record.key())) {
+                        return Optional.of(record);
+                    }
+                }
+            }
+        }
+        return Optional.empty();
+    }
     private List<ConsumerRecord<String, SpecificRecord>> consumePaymentEvents(Set<UUID> orderIds) {
         Properties properties = new Properties();
         properties.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, kafka.getBootstrapServers());
@@ -340,32 +423,24 @@ class PaymentOutboxPublisherIntegrationTest {
         });
     }
 
-    private void assertPaymentConsumerHasNotCommitted(long recordOffset) throws Exception {
-        try (AdminClient adminClient = adminClient()) {
-            var offsets = adminClient.listConsumerGroupOffsets(PAYMENT_CONSUMER_GROUP)
-                    .partitionsToOffsetAndMetadata()
-                    .get();
-            var committedOffset = offsets.get(new TopicPartition("orders", 0));
-            assertThat(committedOffset == null || committedOffset.offset() <= recordOffset).isTrue();
-        }
-    }
-
     private AdminClient adminClient() {
         return AdminClient.create(Map.of(
                 AdminClientConfig.BOOTSTRAP_SERVERS_CONFIG,
                 kafka.getBootstrapServers()));
     }
 
-    private void installOutboxInsertFailure() {
+    private void installOutboxInsertFailure(long failedInserts) {
         jdbcTemplate.execute("CREATE SEQUENCE payment_service.payment_outbox_reject_attempts");
         jdbcTemplate.execute("""
                 CREATE FUNCTION payment_service.reject_payment_outbox_insert() RETURNS trigger AS $$
                 BEGIN
-                    PERFORM nextval('payment_service.payment_outbox_reject_attempts');
-                    RAISE EXCEPTION 'forced payment outbox persistence failure';
+                    IF nextval('payment_service.payment_outbox_reject_attempts') <= %d THEN
+                        RAISE EXCEPTION 'forced payment outbox persistence failure';
+                    END IF;
+                    RETURN NEW;
                 END;
                 $$ LANGUAGE plpgsql
-                """);
+                """.formatted(failedInserts));
         jdbcTemplate.execute("""
                 CREATE TRIGGER reject_payment_outbox_insert
                 BEFORE INSERT ON payment_service.outbox_events
@@ -401,7 +476,7 @@ class PaymentOutboxPublisherIntegrationTest {
                 .build();
     }
 
-    private String headerValue(ConsumerRecord<String, SpecificRecord> record, String name) {
+    private String headerValue(ConsumerRecord<String, ?> record, String name) {
         return new String(record.headers().lastHeader(name).value(), StandardCharsets.UTF_8);
     }
 
@@ -416,7 +491,9 @@ class PaymentOutboxPublisherIntegrationTest {
         NewTopics eventTopics() {
             return new NewTopics(
                     TopicBuilder.name("orders").partitions(1).replicas(1).build(),
-                    TopicBuilder.name(PAYMENTS_TOPIC).partitions(1).replicas(1).build());
+                    TopicBuilder.name(PAYMENTS_TOPIC).partitions(1).replicas(1).build(),
+                    TopicBuilder.name(RETRY_TOPIC).partitions(1).replicas(1).build(),
+                    TopicBuilder.name(DLQ_TOPIC).partitions(1).replicas(1).build());
         }
     }
 }
